@@ -1,6 +1,7 @@
 import { createCard, createBack, cardName, sortHand, tiltFor, COLOR_HEX } from './cards.js';
 import { sfx, isMuted, setMuted } from './sound.js';
 import { fly, toast, bubble, confetti, vibrate } from './fx.js';
+import { t, has, getLang, setLang, applyStatic, onLangChange } from './i18n.js';
 
 // ================================================================
 // helpers
@@ -10,6 +11,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const safeColor = c => (/^#[0-9a-f]{3,8}$/i.test(c || '') ? c : '#888');
+const cap = str => str.charAt(0).toUpperCase() + str.slice(1);
 
 const store = {
   get(key, fallback) {
@@ -23,20 +25,20 @@ const store = {
   },
 };
 
+const cardsOpt = n => [n, () => t('opt.cards', { n })];
 const SETTINGS_UI = [
-  { key: 'startCards', label: 'Starting hand', type: 'select', options: [[5, '5 cards'], [7, '7 cards'], [10, '10 cards'], [15, '15 cards']] },
-  { key: 'targetScore', label: 'Play to', hint: 'Points needed to win the game', type: 'select', options: [[0, 'One round'], [100, '100 pts'], [250, '250 pts'], [500, '500 pts'], [1000, '1000 pts']] },
-  { key: 'turnTimer', label: 'Turn timer', hint: 'Autopilot moves when time runs out', type: 'select', options: [[0, 'Off'], [15, '15 sec'], [30, '30 sec'], [60, '60 sec']] },
-  { key: 'unoPenalty', label: 'Forgot UNO penalty', type: 'select', options: [[2, '2 cards'], [4, '4 cards']] },
-  { key: 'stacking', label: 'Stacking', hint: 'Answer +2 with +2/+4, and +4 with +4', type: 'bool' },
-  { key: 'challenge', label: 'Challenge +4', hint: 'Call out an illegal Wild Draw Four (off while stacking)', type: 'bool' },
-  { key: 'drawUntilPlayable', label: 'Draw until playable', hint: 'Keep drawing until you can play', type: 'bool' },
-  { key: 'forcePlay', label: 'Forced play', hint: 'A playable drawn card must be played', type: 'bool' },
-  { key: 'sevenZero', label: '7-0 rule', hint: '7 swaps hands, 0 rotates all hands', type: 'bool' },
-  { key: 'jumpIn', label: 'Jump-in', hint: 'Play an identical card out of turn', type: 'bool' },
+  { key: 'startCards', type: 'select', options: [cardsOpt(5), cardsOpt(7), cardsOpt(10), cardsOpt(15)] },
+  { key: 'targetScore', hint: true, type: 'select', options: [[0, () => t('opt.oneRound')], ...[100, 250, 500, 1000].map(n => [n, () => t('opt.points', { n })])] },
+  { key: 'turnTimer', hint: true, type: 'select', options: [[0, () => t('opt.off')], ...[15, 30, 60].map(n => [n, () => t('opt.seconds', { n })])] },
+  { key: 'unoPenalty', type: 'select', options: [cardsOpt(2), cardsOpt(4)] },
+  { key: 'stacking', hint: true, type: 'bool' },
+  { key: 'challenge', hint: true, type: 'bool' },
+  { key: 'drawUntilPlayable', hint: true, type: 'bool' },
+  { key: 'forcePlay', hint: true, type: 'bool' },
+  { key: 'sevenZero', hint: true, type: 'bool' },
+  { key: 'jumpIn', hint: true, type: 'bool' },
 ];
 const SORT_MODES = ['color', 'value', 'none'];
-const SORT_LABEL = { color: 'Sort: color', value: 'Sort: number', none: 'Sort: off' };
 const REACTIONS = ['😂', '😡', '😎', '🔥', '👏', '😭', '🤡', '💀', '🙏', '👀'];
 
 const app = {
@@ -60,14 +62,25 @@ const app = {
   connBannerTimer: 0,
   pickResolve: null,
   roomPollTimer: 0,
+  lastRooms: [],
   skew: 0,
   lobbySig: '',
+  chatMsgs: [],   // kept so chat can be re-rendered when the language changes
+  logEvents: [],  // same for the game log
 };
 
 const me = () => app.state?.me;
 const member = id => app.state?.members.find(m => m.id === id);
 const isHost = () => Boolean(app.state && app.state.hostId === app.state.me);
-const nameOf = (id, you = true) => (id === me() && you ? 'You' : member(id)?.name ?? 'Someone');
+// "You" for the current player (unless you=false), else the player's name.
+const nameOf = (id, you = true) => (id === me() && you ? t('you') : member(id)?.name ?? t('someone'));
+const colorName = c => t(`color.${c}`);
+
+// Server errors arrive as { error, code, params }; prefer our own translation.
+function errorMessage(err) {
+  if (err.code && has(`err.${err.code}`)) return t(`err.${err.code}`, err.params || {});
+  return err.message;
+}
 
 function avatarHtml(m) {
   if (!m) return '<div class="avatar">?</div>';
@@ -88,8 +101,10 @@ async function api(path, body) {
   let data = {};
   try { data = await res.json(); } catch { /* empty */ }
   if (!res.ok) {
-    const err = new Error(data.error || `Request failed (${res.status})`);
+    const err = new Error(data.error || t('err.requestFailed', { status: res.status }));
     err.status = res.status;
+    err.code = data.code;
+    err.params = data.params;
     throw err;
   }
   return data;
@@ -102,8 +117,8 @@ async function act(action, extra = {}) {
     return true;
   } catch (err) {
     sfx.error();
-    if (err instanceof TypeError) toast('Connection problem, try again', 'error');
-    else toast(err.message, 'error');
+    if (err instanceof TypeError) toast(t('err.connection'), 'error');
+    else toast(errorMessage(err), 'error');
     if (err.status === 404) recheck();
     return false;
   }
@@ -161,7 +176,7 @@ async function recheck() {
     await api('check', app.session);
     recheckTimer = setTimeout(() => app.session && connect(), 800);
   } catch (err) {
-    if (err.status === 404) leaveToHome('That room is gone (maybe the server restarted).');
+    if (err.status === 404) leaveToHome(t('toast.roomGone'));
     else recheckTimer = setTimeout(recheck, 2500);
   }
 }
@@ -180,6 +195,10 @@ function leaveToHome(message) {
   clearSession();
   app.state = null;
   app.resultsKey = null;
+  app.logEvents = [];
+  app.chatMsgs = [];
+  $('#log-list').innerHTML = '';
+  $('#chat-list').innerHTML = '';
   closeAllModals();
   setConn(true);
   history.replaceState(null, '', location.pathname);
@@ -200,13 +219,14 @@ function onMessage(msg) {
     }
     case 'chat': addChat(msg.msg, true); break;
     case 'chatHistory':
+      app.chatMsgs = [];
       $('#chat-list').innerHTML = '';
       for (const m of msg.messages) addChat(m, false);
       break;
     case 'react': showReaction(msg.from, msg.emoji); break;
     case 'kicked':
       if (app.es) app.es.close();
-      leaveToHome(msg.reason);
+      leaveToHome(has(`kick.${msg.reason}`) ? t(`kick.${msg.reason}`) : msg.reason);
       break;
     default: break;
   }
@@ -256,13 +276,13 @@ function renderAddresses(box, code) {
   const list = (app.info?.addresses || []).map(a => ({ url: `http://${a.address}:${port}${suffix}`, iface: a.iface, weak: a.address.startsWith('169.254.') }));
   if (!list.length) {
     box.innerHTML = `<div class="addr"><a href="${esc(location.origin + suffix)}">${esc(location.origin + suffix)}</a></div>
-      <p class="muted small">No network found on the server PC. Connect it to Wi-Fi or turn on Mobile Hotspot.</p>`;
+      <p class="muted small">${esc(t('addr.none'))}</p>`;
     return;
   }
   box.innerHTML = list.map(a => `
     <div class="addr${a.weak ? ' weak' : ''}">
-      <div><a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.url.replace('http://', ''))}</a><br><small>${esc(a.iface)}${a.weak ? ' · probably not reachable' : ''}</small></div>
-      <button class="btn ghost sm" data-copy="${esc(a.url)}">Copy</button>
+      <div><a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.url.replace('http://', ''))}</a><br><small>${esc(a.iface)}${a.weak ? ` · ${esc(t('addr.weak'))}` : ''}</small></div>
+      <button class="btn ghost sm" data-copy="${esc(a.url)}">${esc(t('btn.copy'))}</button>
     </div>`).join('');
 }
 
@@ -280,7 +300,7 @@ async function copyText(text) {
     try { document.execCommand('copy'); } catch { /* ignore */ }
     ta.remove();
   }
-  toast('Link copied 📋', 'good', 1500);
+  toast(t('toast.copied'), 'good', 1500);
 }
 
 function startRoomPolling() {
@@ -289,25 +309,27 @@ function startRoomPolling() {
     try {
       const res = await fetch('/api/rooms');
       const { rooms } = await res.json();
-      renderRoomList(rooms);
-    } catch { renderRoomList([]); }
+      app.lastRooms = rooms;
+    } catch { app.lastRooms = []; }
+    renderRoomList();
   };
   poll();
   app.roomPollTimer = setInterval(poll, 3000);
 }
 function stopRoomPolling() { clearInterval(app.roomPollTimer); }
 
-function renderRoomList(rooms) {
+function renderRoomList() {
+  const rooms = app.lastRooms;
   const last = store.get('last', null);
   const items = [];
   if (last && rooms.some(r => r.code === last.code)) {
-    items.push(`<button class="room-item" data-rejoin="1"><span><b>${esc(last.code)}</b><br><small>Rejoin as ${esc(last.name || 'you')}</small></span><span class="status">rejoin</span></button>`);
+    items.push(`<button class="room-item" data-rejoin="1"><span><b>${esc(last.code)}</b><br><small>${t('rooms.rejoin', { name: esc(last.name || '?') })}</small></span><span class="status">${esc(t('rooms.rejoinTag'))}</span></button>`);
   }
   for (const r of rooms) {
     if (last && r.code === last.code) continue;
     items.push(`<button class="room-item" data-join="${esc(r.code)}">
-      <span><b>${esc(r.code)}</b><br><small>${esc(r.host)}'s room · ${r.players} player${r.players === 1 ? '' : 's'}</small></span>
-      <span class="status ${r.status === 'playing' ? 'playing' : ''}">${r.status === 'playing' ? 'in game' : r.status}</span>
+      <span><b>${esc(r.code)}</b><br><small>${t('rooms.desc', { host: esc(r.host), n: r.players })}</small></span>
+      <span class="status ${r.status === 'playing' ? 'playing' : ''}">${esc(t(`rooms.status.${r.status}`))}</span>
     </button>`);
   }
   $('#room-list').innerHTML = items.join('');
@@ -317,7 +339,7 @@ function myName() {
   const input = $('#name-input');
   const name = input.value.trim();
   if (!name) {
-    toast('Enter your name first ✏️', 'error');
+    toast(t('toast.enterName'), 'error');
     input.focus();
     return null;
   }
@@ -331,19 +353,19 @@ async function createRoom() {
   try {
     const s = await api('create', { name });
     enterRoom(s);
-  } catch (err) { toast(err.message, 'error'); }
+  } catch (err) { toast(errorMessage(err), 'error'); }
 }
 
 async function joinRoom(code) {
   const name = myName();
   if (!name) return;
   code = String(code || '').trim().toUpperCase();
-  if (code.length !== 4) { toast('Room codes have 4 letters', 'error'); $('#code-input').focus(); return; }
+  if (code.length !== 4) { toast(t('toast.codeLength'), 'error'); $('#code-input').focus(); return; }
   const last = store.get('last', null);
   try {
     const s = await api('join', { code, name, token: last?.code === code ? last.token : undefined });
     enterRoom(s);
-  } catch (err) { toast(err.message, 'error'); }
+  } catch (err) { toast(errorMessage(err), 'error'); }
 }
 
 // ---------------- lobby ----------------
@@ -351,13 +373,15 @@ async function joinRoom(code) {
 function buildSettingsForm() {
   const form = $('#settings-form');
   form.innerHTML = SETTINGS_UI.map(s => {
-    const hint = s.hint ? `<small>${s.hint}</small>` : '';
+    const hint = s.hint ? `<small data-i18n="set.${s.key}.hint"></small>` : '';
+    const label = `<span class="lbl"><b data-i18n="set.${s.key}"></b>${hint}</span>`;
     if (s.type === 'bool') {
-      return `<label class="setting"><span class="lbl"><b>${s.label}</b>${hint}</span><span class="switch"><input type="checkbox" name="${s.key}"><i></i></span></label>`;
+      return `<label class="setting">${label}<span class="switch"><input type="checkbox" name="${s.key}"><i></i></span></label>`;
     }
-    const opts = s.options.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
-    return `<label class="setting"><span class="lbl"><b>${s.label}</b>${hint}</span><select name="${s.key}">${opts}</select></label>`;
+    const opts = s.options.map(([v]) => `<option value="${v}"></option>`).join('');
+    return `<label class="setting">${label}<select name="${s.key}">${opts}</select></label>`;
   }).join('');
+  labelSettingsForm();
   form.addEventListener('change', () => {
     const settings = {};
     for (const s of SETTINGS_UI) {
@@ -366,6 +390,19 @@ function buildSettingsForm() {
     }
     act('settings', { settings });
   });
+}
+
+function labelSettingsForm() {
+  const form = $('#settings-form');
+  applyStatic(form);
+  for (const s of SETTINGS_UI) {
+    if (s.type !== 'select') continue;
+    const select = form.elements[s.key];
+    for (const [v, label] of s.options) {
+      const opt = [...select.options].find(o => o.value === String(v));
+      if (opt) opt.textContent = label();
+    }
+  }
 }
 
 function fillSettings(settings, editable) {
@@ -387,7 +424,7 @@ function renderLobby(s) {
   $('#lobby-code').textContent = s.code;
   $('#lobby-code-2').textContent = s.code;
   const host = isHost();
-  const sig = JSON.stringify([s.members, s.hostId, host]);
+  const sig = JSON.stringify([s.members, s.hostId, host, getLang()]);
   if (sig !== app.lobbySig) {
     app.lobbySig = sig;
     $('#lobby-count').textContent = `${s.members.length}/10`;
@@ -396,26 +433,28 @@ function renderLobby(s) {
         ${avatarHtml(m)}
         <span class="pname">${esc(m.name)}</span>
         <span class="tags">
-          ${m.id === s.hostId ? '<span class="tag host">HOST</span>' : ''}
-          ${m.id === s.me ? '<span class="tag you">YOU</span>' : ''}
-          ${m.isBot ? '<span class="tag">BOT</span>' : ''}
-          ${!m.connected ? '<span class="tag off">AWAY</span>' : ''}
+          ${m.id === s.hostId ? `<span class="tag host">${t('tag.host')}</span>` : ''}
+          ${m.id === s.me ? `<span class="tag you">${t('tag.you')}</span>` : ''}
+          ${m.isBot ? `<span class="tag">${t('tag.bot')}</span>` : ''}
+          ${!m.connected ? `<span class="tag off">${t('tag.away')}</span>` : ''}
         </span>
-        ${host && m.id !== s.me ? `<button class="btn ghost sm kick" data-kick="${m.id}" title="Remove ${esc(m.name)}">✕</button>` : ''}
+        ${host && m.id !== s.me ? `<button class="btn ghost sm kick" data-kick="${m.id}" title="${esc(t('lobby.remove', { name: m.name }))}">✕</button>` : ''}
       </li>`).join('');
   }
   $('#btn-add-bot').classList.toggle('hidden', !host || s.members.length >= 10);
   fillSettings(s.settings, host);
-  $('#rules-lock').textContent = host ? 'you pick' : 'host picks';
+  $('#rules-lock').textContent = host ? t('lobby.youPick') : t('lobby.hostPicks');
   const start = $('#btn-start');
   start.classList.toggle('hidden', !host);
   start.disabled = s.members.length < 2;
-  start.textContent = s.members.length < 2 ? 'Need 2+ players: add a bot or a friend' : `Start game (${s.members.length} players)`;
-  const hostName = member(s.hostId)?.name || 'the host';
-  $('#lobby-wait').textContent = host ? 'Everyone in the list will be dealt in.' : `Waiting for ${hostName} to start…`;
-  if (!$('#lobby-addresses').children.length || $('#lobby-addresses').dataset.code !== s.code) {
-    $('#lobby-addresses').dataset.code = s.code;
-    renderAddresses($('#lobby-addresses'), s.code);
+  start.textContent = s.members.length < 2 ? t('lobby.needPlayers') : t('lobby.start', { n: s.members.length });
+  const hostName = member(s.hostId)?.name || t('theHost');
+  $('#lobby-wait').textContent = host ? t('lobby.allDealt') : t('lobby.waiting', { name: hostName });
+  const addrBox = $('#lobby-addresses');
+  if (!addrBox.children.length || addrBox.dataset.code !== s.code || addrBox.dataset.lang !== getLang()) {
+    addrBox.dataset.code = s.code;
+    addrBox.dataset.lang = getLang();
+    renderAddresses(addrBox, s.code);
   }
 }
 
@@ -445,7 +484,7 @@ function renderGame(s, prev) {
   if (app.gameId !== g.id) {
     app.gameId = g.id;
     app.lastSeq = 0;
-    if (!boot) $('#log-list').innerHTML = '';
+    if (!boot) { app.logEvents = []; $('#log-list').innerHTML = ''; }
   }
   const handRects = new Map($$('#hand .card').map(el => [Number(el.dataset.id), el.getBoundingClientRect()]));
   const myP = g.players.find(p => p.id === s.me);
@@ -454,7 +493,9 @@ function renderGame(s, prev) {
   document.body.dataset.color = g.phase === 'play' ? g.color : 'none';
   $('#g-code').textContent = s.code;
   const target = g.settings.targetScore;
-  $('#g-round').textContent = `Round ${g.round}${target ? ` · first to ${target}` : ' · winner takes all'}`;
+  $('#g-round').textContent = target
+    ? t('game.roundTarget', { n: g.round, target })
+    : t('game.roundSingle', { n: g.round });
 
   renderOpponents(s, g);
   renderPiles(g, myTurn);
@@ -473,9 +514,10 @@ function renderGame(s, prev) {
     vibrate(40);
   }
   app.prevMyTurn = myTurn;
-  document.title = myTurn && document.hidden ? '▶ Your turn! · UNO' : 'UNO Night';
+  document.title = myTurn && document.hidden ? t('title.turn') : t('title.page');
 }
 
+let seatsSig = '';
 function renderOpponents(s, g) {
   const box = $('#opponents');
   const amIn = g.players.some(p => p.id === s.me);
@@ -490,45 +532,44 @@ function renderOpponents(s, g) {
       ${avatarHtml(m)}
       <div class="seat-info">
         <span class="seat-name">${esc(m?.name ?? '?')}${p.id === g.dealer ? ' <span class="dealer-tag">(D)</span>' : ''}</span>
-        <span class="seat-meta"><span class="mini-hand">${'<i></i>'.repeat(backs)}</span><b>${p.count}</b><span class="score">· ${p.score} pts</span></span>
+        <span class="seat-meta"><span class="mini-hand">${'<i></i>'.repeat(backs)}</span><b>${p.count}</b><span class="score">${t('seat.pts', { n: p.score })}</span></span>
       </div>
       ${p.uno ? '<span class="uno-tag">UNO</span>' : ''}
-      ${p.vulnerable && amIn && g.phase === 'play' ? `<button class="catch-btn" data-catch="${p.id}">Catch!</button>` : ''}
+      ${p.vulnerable && amIn && g.phase === 'play' ? `<button class="catch-btn" data-catch="${p.id}">${t('seat.catch')}</button>` : ''}
     </div>`;
   }).join('');
 
   // spectators who'll join next round
   const waiting = s.members.filter(m => m.waiting);
   const extra = waiting.length
-    ? `<div class="seat offline"><div class="seat-info"><span class="seat-name">👀 ${waiting.map(w => esc(w.name)).join(', ')}</span><span class="seat-meta">joins next round</span></div></div>`
+    ? `<div class="seat offline"><div class="seat-info"><span class="seat-name">👀 ${waiting.map(w => esc(w.name)).join(', ')}</span><span class="seat-meta">${t('seat.joinsNext')}</span></div></div>`
     : '';
   if (seatsSig !== html + extra) {
     seatsSig = html + extra;
     box.innerHTML = seatsSig;
   }
 }
-let seatsSig = '';
 
 let drawSig = '';
 let discardSig = '';
 function renderPiles(g, myTurn) {
   const draw = $('#draw-pile');
   const can = myTurn && g.canDraw;
-  const sigD = `${Math.min(g.drawPile, 3)}|${g.drawPile}|${g.pending.count}|${can}`;
+  const sigD = `${g.drawPile}|${g.pending.count}|${can}|${getLang()}`;
   if (sigD !== drawSig) {
     drawSig = sigD;
     draw.innerHTML = '';
     const layers = Math.max(1, Math.min(3, g.drawPile));
     for (let i = 0; i < layers; i++) draw.appendChild(createBack());
     if (!g.drawPile) draw.lastChild.style.opacity = '0.25';
-    draw.insertAdjacentHTML('beforeend', `<span class="pile-count">${g.drawPile} left</span>`);
+    draw.insertAdjacentHTML('beforeend', `<span class="pile-count">${t('pile.left', { n: g.drawPile })}</span>`);
     if (g.pending.count > 0) draw.insertAdjacentHTML('beforeend', `<span class="pending-badge">+${g.pending.count}</span>`);
     draw.classList.toggle('can', can);
     draw.disabled = !can;
   }
 
   const discard = $('#discard-pile');
-  const sigX = `${g.recent.map(c => c.id).join(',')}|${g.color}`;
+  const sigX = `${g.recent.map(c => c.id).join(',')}|${g.color}|${getLang()}`;
   if (sigX !== discardSig) {
     discardSig = sigX;
     discard.innerHTML = '';
@@ -552,12 +593,12 @@ function renderMe(s, g, myP, myTurn) {
   const box = $('#me-info');
   const m = member(s.me);
   if (!myP) {
-    box.innerHTML = `${avatarHtml(m)}<div class="seat-info"><span class="seat-name">${esc(m?.name)}</span><span class="seat-meta">spectating</span></div>`;
+    box.innerHTML = `${avatarHtml(m)}<div class="seat-info"><span class="seat-name">${esc(m?.name)}</span><span class="seat-meta">${t('me.spectating')}</span></div>`;
     box.className = 'me-info';
     return;
   }
   box.className = `me-info${myTurn ? ' turn' : ''}${myP.vulnerable ? ' vulnerable' : ''}`;
-  box.innerHTML = `${avatarHtml(m)}<div class="seat-info"><span class="seat-name">${esc(m?.name)} (you)</span><span class="seat-meta"><b>${myP.count}</b> cards · ${myP.score} pts</span></div>`;
+  box.innerHTML = `${avatarHtml(m)}<div class="seat-info"><span class="seat-name">${esc(m?.name)} ${t('me.you')}</span><span class="seat-meta">${t('me.meta', { n: myP.count, pts: myP.score })}</span></div>`;
 }
 
 function renderHand(g, myTurn) {
@@ -601,7 +642,7 @@ function layoutHand() {
   hand.style.setProperty('--gap', `${gap}px`);
 }
 
-function animateNewCards(els, g) {
+function animateNewCards(els) {
   const from = $('#draw-pile').getBoundingClientRect();
   const big = els.length > 3;
   els.forEach((el, i) => {
@@ -623,18 +664,18 @@ function renderActions(g, myP, myTurn) {
   uno.classList.toggle('hidden', !showUno);
   const safe = g.safe && !myP?.vulnerable;
   uno.classList.toggle('done', safe);
-  uno.textContent = safe ? 'UNO ✓' : 'UNO!';
+  uno.textContent = safe ? t('btn.unoDone') : t('btn.uno');
   uno.disabled = safe;
   uno.classList.toggle('hot', Boolean(myP?.vulnerable) || (count === 2 && myTurn && !g.safe && g.playable.length > 0));
 
   const draw = $('#btn-draw');
   draw.classList.toggle('hidden', !g.canDraw);
-  if (g.pending.count > 0) draw.textContent = g.canChallenge ? `Accept +${g.pending.count}` : `Take +${g.pending.count}`;
-  else draw.textContent = 'Draw';
+  if (g.pending.count > 0) draw.textContent = t(g.canChallenge ? 'btn.accept' : 'btn.take', { n: g.pending.count });
+  else draw.textContent = t('btn.draw');
   draw.classList.toggle('warn', g.pending.count > 0);
   $('#btn-pass').classList.toggle('hidden', !g.canPass);
   $('#btn-challenge').classList.toggle('hidden', !g.canChallenge);
-  $('#btn-sort').textContent = SORT_LABEL[app.sortMode];
+  $('#btn-sort').textContent = t(`sort.${app.sortMode}`);
   $('#btn-sort').classList.toggle('hidden', !myP);
 }
 
@@ -643,19 +684,20 @@ function renderStatus(g, myP, myTurn) {
   let text;
   let cls = '';
   const cur = member(g.current);
-  if (g.phase !== 'play') text = g.phase === 'gameOver' ? 'Game over!' : 'Round over!';
-  else if (!myP) text = `👀 Spectating · ${esc(cur?.name ?? '?')}'s turn`;
+  const curName = cur?.name ?? '?';
+  if (g.phase !== 'play') text = t(g.phase === 'gameOver' ? 'status.gameOver' : 'status.roundOver');
+  else if (!myP) text = t('status.spectating', { name: curName });
   else if (myTurn) {
     cls = 'mine';
-    if (g.canChallenge) { text = 'Wild Draw Four! Accept or challenge?'; cls = 'danger'; }
-    else if (g.pending.count > 0) { text = `Stack a draw card or take ${g.pending.count}!`; cls = 'danger'; }
-    else if (g.drawn !== null) text = g.canPass ? 'Play the card you drew, or pass' : 'You must play the card you drew';
-    else text = g.playable.length ? 'Your turn!' : 'Your turn: no match, draw a card';
+    if (g.canChallenge) { text = t('status.challenge'); cls = 'danger'; }
+    else if (g.pending.count > 0) { text = t('status.stack', { n: g.pending.count }); cls = 'danger'; }
+    else if (g.drawn !== null) text = t(g.canPass ? 'status.drawnPass' : 'status.drawnForced');
+    else text = t(g.playable.length ? 'status.yourTurn' : 'status.noMatch');
   } else {
-    text = `${esc(cur?.name ?? '?')}'s turn${cur?.isBot ? ' 🤖' : ''}${cur && !cur.connected ? ' (away, autopilot)' : ''}`;
+    text = t('status.theirTurn', { name: curName }) + (cur?.isBot ? ' 🤖' : '') + (cur && !cur.connected ? t('status.away') : '');
   }
   el.className = `status ${cls}`;
-  el.innerHTML = text;
+  el.textContent = text;
 }
 
 // ---------------- turn timer ----------------
@@ -750,7 +792,7 @@ function animateEvent(ev, g, handRects, drawIdx) {
       break;
     }
     case 'skip':
-      setTimeout(() => { sfx.skip(); bubble(anchorFor(ev.player), '⊘ Skipped', 'skip'); }, 250);
+      setTimeout(() => { sfx.skip(); bubble(anchorFor(ev.player), t('ev.skipped'), 'skip'); }, 250);
       break;
     case 'reverse': {
       sfx.reverse();
@@ -758,85 +800,95 @@ function animateEvent(ev, g, handRects, drawIdx) {
       dir.classList.remove('flip');
       void dir.offsetWidth;
       dir.classList.add('flip');
-      bubble($('#discard-pile'), '⇄ Reverse!', 'skip');
+      bubble($('#discard-pile'), t('ev.reverse'), 'skip');
       break;
     }
     case 'uno':
       sfx.uno();
-      bubble(anchorFor(ev.player), 'UNO!', 'uno');
+      bubble(anchorFor(ev.player), t('btn.uno'), 'uno');
       vibrate(80);
       break;
-    case 'caught':
+    case 'caught': {
       sfx.caught();
-      bubble(anchorFor(ev.player), 'Caught! 🚨', 'bad');
-      toast(`${nameOf(ev.by)} caught ${mine ? 'you' : nameOf(ev.player)} without UNO! +${g.settings.unoPenalty}`, mine ? 'error' : 'info');
+      bubble(anchorFor(ev.player), t('ev.caught'), 'bad');
+      const n = g.settings.unoPenalty;
+      if (mine) toast(t('toast.caughtMe', { by: nameOf(ev.by), n }), 'error');
+      else if (ev.by === me()) toast(t('toast.youCaught', { who: nameOf(ev.player), n }), 'good');
+      else toast(t('toast.caught', { by: nameOf(ev.by), who: nameOf(ev.player), n }));
       break;
+    }
     case 'challenge':
-      toast(ev.success
-        ? `${nameOf(ev.player)} challenged ${ev.target === me() ? 'you' : nameOf(ev.target)}: busted! 🕵️ +4`
-        : `${nameOf(ev.player)} challenged ${ev.target === me() ? 'you' : nameOf(ev.target)}: it was legal! +6`, ev.success ? 'good' : 'error', 3200);
+      toast(t(ev.success ? 'toast.challengeOk' : 'toast.challengeBad', { a: nameOf(ev.player), b: nameOf(ev.target) }), ev.success ? 'good' : 'error', 3200);
       break;
     case 'swap':
       sfx.swap();
-      toast(`🔄 ${nameOf(ev.player)} swapped hands with ${ev.target === me() ? 'you' : nameOf(ev.target)}`, 'info', 3000);
+      toast(t('toast.swap', { a: nameOf(ev.player), b: nameOf(ev.target) }), 'info', 3000);
       break;
     case 'rotate':
       sfx.swap();
-      toast('🔄 Zero! Every hand moves along', 'info', 3000);
+      toast(t('toast.rotate'), 'info', 3000);
       break;
     case 'jumpIn':
-      bubble(anchorFor(ev.player), 'Jump-in! ⚡', 'good');
+      bubble(anchorFor(ev.player), t('ev.jumpIn'), 'good');
       break;
     case 'timeout':
-      toast(mine ? '⏰ Time\'s up! Autopilot played for you' : `⏰ ${nameOf(ev.player)} ran out of time`, mine ? 'error' : 'info');
+      toast(mine ? t('toast.timeoutMe') : t('toast.timeout', { name: nameOf(ev.player) }), mine ? 'error' : 'info');
       break;
     case 'reshuffle':
-      toast('♻️ Discard pile shuffled back into the deck', 'info', 1800);
+      toast(t('toast.reshuffle'), 'info', 1800);
       break;
     case 'roundStart':
-      toast(`Round ${ev.round}: deal! 🃏`, 'good', 1800);
+      toast(t('toast.roundStart', { n: ev.round }), 'good', 1800);
       break;
     case 'roundOver': {
       const won = ev.winner === me();
       setTimeout(won ? sfx.win : sfx.lose, 300);
-      bubble(anchorFor(ev.winner), won ? 'I win! 🎉' : '🎉 Out!', 'good');
+      bubble(anchorFor(ev.winner), won ? t('ev.iWin') : t('ev.out'), 'good');
       break;
     }
     case 'abandoned':
-      toast('Not enough players left to continue', 'error', 3500);
+      toast(t('toast.abandoned'), 'error', 3500);
       break;
     default: break;
   }
 }
 
-const REASON_TEXT = { draw2: ' (+2)', wild4: ' (+4)', caught: ' (forgot UNO)', challenge: ' (challenge)', draw: '' };
-
+// Log lines are HTML, so names are escaped before they go into the template.
 function describe(ev) {
-  const who = nameOf(ev.player ?? ev.winner);
-  const obj = id => (id === me() ? 'you' : nameOf(id));
+  const actor = ev.player ?? ev.winner;
+  const p = { who: esc(nameOf(actor)), me: actor === me() };
   switch (ev.type) {
-    case 'play': return `${who} played <b>${esc(cardName(ev.card))}</b>${ev.card.color === 'wild' ? ` → ${ev.color}` : ''}`;
-    case 'draw': return `${who} drew ${ev.count} card${ev.count === 1 ? '' : 's'}${REASON_TEXT[ev.reason] || ''}`;
-    case 'pass': return `${who} passed`;
-    case 'skip': return `${who} ${ev.player === me() ? 'were' : 'was'} skipped`;
-    case 'reverse': return 'Direction reversed';
-    case 'uno': return `<b>${who} called UNO!</b>`;
-    case 'caught': return `${nameOf(ev.by)} caught ${obj(ev.player)} without UNO`;
-    case 'challenge': return `${who} challenged ${obj(ev.target)}: ${ev.success ? 'bluff caught' : 'it was legal'}`;
-    case 'swap': return `${who} swapped hands with ${obj(ev.target)}`;
-    case 'rotate': return 'All hands rotated';
-    case 'jumpIn': return `${who} jumped in!`;
-    case 'timeout': return `${who} ran out of time`;
-    case 'reshuffle': return 'Deck reshuffled';
-    case 'roundStart': return `<b>Round ${ev.round}</b>, ${esc(nameOf(ev.dealer))} dealt. First card: ${esc(cardName(ev.card))}`;
-    case 'roundOver': return `<b>${who} won the round</b> (+${ev.points} pts)${ev.gameOver ? '. Game over!' : ''}`;
-    case 'abandoned': return 'Game ended: not enough players';
-    case 'leave': return 'A player left the game';
+    case 'play':
+      return t('log.play', { ...p, card: esc(cardName(ev.card)), color: ev.card.color === 'wild' ? colorName(ev.color) : '' });
+    case 'draw':
+      return t('log.draw', { ...p, n: ev.count, reason: ev.reason === 'draw' ? '' : t(`log.reason.${ev.reason}`) });
+    case 'pass': return t('log.pass', p);
+    case 'skip': return t('log.skip', p);
+    case 'reverse': return t('log.reverse');
+    case 'uno': return t('log.uno', p);
+    case 'caught':
+      return t('log.caught', { by: esc(nameOf(ev.by)), byMe: ev.by === me(), who: esc(nameOf(ev.player)), whoMe: ev.player === me() });
+    case 'challenge':
+      return t('log.challenge', { ...p, target: esc(nameOf(ev.target)), targetMe: ev.target === me(), ok: ev.success });
+    case 'swap': return t('log.swap', { ...p, target: esc(nameOf(ev.target)) });
+    case 'rotate': return t('log.rotate');
+    case 'jumpIn': return t('log.jumpIn', p);
+    case 'timeout': return t('log.timeout', p);
+    case 'reshuffle': return t('log.reshuffle');
+    case 'roundStart':
+      return t('log.roundStart', { n: ev.round, dealer: esc(nameOf(ev.dealer, false)), card: esc(cardName(ev.card)) });
+    case 'roundOver': return t('log.roundOver', { ...p, pts: ev.points, over: ev.gameOver });
+    case 'abandoned': return t('log.abandoned');
+    case 'leave': return t('log.leave');
     default: return null;
   }
 }
 
-function logEvent(ev) {
+function logEvent(ev, store = true) {
+  if (store) {
+    app.logEvents.push(ev);
+    if (app.logEvents.length > 200) app.logEvents.shift();
+  }
   const html = describe(ev);
   if (!html) return;
   const list = $('#log-list');
@@ -854,10 +906,12 @@ function logEvent(ev) {
 // ================================================================
 
 function cantPlayReason(g, card) {
-  if (g.current !== me()) return g.settings.jumpIn ? 'Not your turn (jump-in needs the exact same card)' : 'Not your turn';
-  if (g.drawn !== null) return 'You can only play the card you just drew';
-  if (g.pending.count > 0) return g.settings.stacking ? `Stack a draw card or take ${g.pending.count}` : `Take the ${g.pending.count} cards`;
-  return `${cardName(card)} doesn't match: play ${g.color} or a ${cardName(g.top).replace(/^(Red|Yellow|Green|Blue) /, '')}`;
+  if (g.current !== me()) return t(g.settings.jumpIn ? 'reason.notTurnJump' : 'reason.notTurn');
+  if (g.drawn !== null) return t('reason.onlyDrawn');
+  if (g.pending.count > 0) return t(g.settings.stacking ? 'reason.stack' : 'reason.take', { n: g.pending.count });
+  const top = g.top;
+  const value = isNaN(Number(top.value)) ? t(`value.${top.value}`) : top.value;
+  return t('reason.noMatch', { card: cardName(card), color: colorName(g.color), value });
 }
 
 async function onCardClick(el) {
@@ -896,7 +950,7 @@ function pickColor(hand, excludeId) {
   for (const c of hand) if (c.id !== excludeId && counts[c.color] !== undefined) counts[c.color]++;
   for (const btn of $$('#modal-color .cbtn')) {
     const col = btn.dataset.color;
-    btn.innerHTML = `${col[0].toUpperCase()}${col.slice(1)}<span class="count">${counts[col]} in hand</span>`;
+    btn.innerHTML = `${esc(cap(colorName(col)))}<span class="count">${esc(t('picker.inHand', { n: counts[col] }))}</span>`;
   }
   return openPicker('color');
 }
@@ -905,7 +959,7 @@ function pickTarget() {
   const g = app.state.game;
   $('#target-list').innerHTML = g.players.filter(p => p.id !== me()).map(p => {
     const m = member(p.id);
-    return `<button class="btn" data-target="${p.id}">${avatarHtml(m)}<span>${esc(m?.name ?? '?')}</span><span class="cnt">${p.count} card${p.count === 1 ? '' : 's'}</span></button>`;
+    return `<button class="btn" data-target="${p.id}">${avatarHtml(m)}<span>${esc(m?.name ?? '?')}</span><span class="cnt">${esc(t('cards.count', { n: p.count }))}</span></button>`;
   }).join('');
   return openPicker('target');
 }
@@ -934,6 +988,7 @@ function closeModal(name) {
   if ((name === 'color' || name === 'target') && app.pickResolve) app.pickResolve(null);
 }
 function closeAllModals() { for (const m of $$('.modal')) closeModal(m.id.replace('modal-', '')); }
+const isOpen = name => !$(`#modal-${name}`).classList.contains('hidden');
 
 function maybeShowResults(g, boot) {
   if (g.phase === 'play') {
@@ -943,7 +998,7 @@ function maybeShowResults(g, boot) {
   }
   const key = `${g.id}:${g.round}:${g.phase}`;
   if (app.resultsKey === key) {
-    if (!$('#modal-results').classList.contains('hidden')) renderResultsActions();
+    if (isOpen('results')) renderResultsActions();
     return;
   }
   app.resultsKey = key;
@@ -959,7 +1014,7 @@ function scoreRows(ids, scores, target, extra = () => '') {
     const m = member(id);
     const sc = scores[id] || 0;
     return `<tr data-id="${id}">
-      <td><div class="who">${avatarHtml(m)}<span>${esc(m?.name ?? 'Someone')}${id === me() ? ' (you)' : ''}</span></div></td>
+      <td><div class="who">${avatarHtml(m)}<span>${esc(m?.name ?? t('someone'))}${id === me() ? esc(t('res.youSuffix')) : ''}</span></div></td>
       ${extra(id)}
       <td class="num">${sc}<div class="score-bar"><i style="width:${Math.min(100, (sc / max) * 100)}%"></i></div></td>
     </tr>`;
@@ -970,29 +1025,30 @@ function showResults(celebrate) {
   const s = app.state;
   const g = s?.game;
   if (!g || g.phase === 'play') return;
+  app.resultsView = 'results';
   const r = g.roundResult;
   const body = $('#results-body');
   if (!r) {
-    body.innerHTML = '<p class="results-title">Game over</p><p class="results-sub">Not enough players left to keep going.</p>';
+    body.innerHTML = `<p class="results-title">${esc(t('res.gameOverTitle'))}</p><p class="results-sub">${esc(t('res.notEnough'))}</p>`;
   } else {
     const ids = Object.keys(r.scores).sort((a, b) => r.scores[b] - r.scores[a]);
     const champ = ids[0];
     const target = g.settings.targetScore;
     const title = r.gameOver
-      ? `🏆 ${champ === me() ? 'You win the game!' : `${esc(nameOf(champ))} wins the game!`}`
-      : `${r.winner === me() ? 'You' : esc(nameOf(r.winner))} won round ${g.round}!`;
+      ? (champ === me() ? t('res.youWinGame') : t('res.winsGame', { name: nameOf(champ) }))
+      : (r.winner === me() ? t('res.youWonRound', { n: g.round }) : t('res.wonRound', { name: nameOf(r.winner), n: g.round }));
     const sub = r.gameOver
-      ? `Final score: ${r.scores[champ]} points${target ? ` (target ${target})` : ''}`
-      : `+${r.points} points · first to ${target} wins`;
+      ? t('res.final', { pts: r.scores[champ] }) + (target ? t('res.targetSuffix', { target }) : '')
+      : t('res.roundSub', { pts: r.points, target });
     body.innerHTML = `
-      <p class="results-title">${title}</p>
-      <p class="results-sub">${sub}</p>
+      <p class="results-title">${esc(title)}</p>
+      <p class="results-sub">${esc(sub)}</p>
       <table class="results-table"><tbody>
         ${scoreRows(ids, r.scores, target, id => {
           const left = r.hands[id] || [];
           const cards = left.length
             ? `<div class="left-cards">${left.slice(0, 16).map(c => createCard(c).outerHTML).join('')}${left.length > 16 ? `<small>+${left.length - 16}</small>` : ''}</div>`
-            : '<b>🎉 out!</b>';
+            : `<b>${esc(t('res.out'))}</b>`;
           return `<td>${cards}</td><td class="num">${id === r.winner ? `+${r.points}` : ''}</td>`;
         })}
       </tbody></table>`;
@@ -1007,15 +1063,16 @@ function showResults(celebrate) {
 function renderResultsActions() {
   const g = app.state?.game;
   const box = $('#results-actions');
-  if (!g) return;
+  if (!g || app.resultsView !== 'results') return;
   const over = g.phase === 'gameOver';
-  let html = '<button class="btn ghost" data-close>View table</button>';
+  let html = `<button class="btn ghost" data-close>${esc(t('res.viewTable'))}</button>`;
   if (isHost()) {
     html += over
-      ? '<button class="btn" data-host="lobby">Back to lobby</button><button class="btn primary" data-host="start">Play again</button>'
-      : '<button class="btn primary" data-host="nextRound">Next round ▶</button>';
+      ? `<button class="btn" data-host="lobby">${esc(t('res.lobby'))}</button><button class="btn primary" data-host="start">${esc(t('res.again'))}</button>`
+      : `<button class="btn primary" data-host="nextRound">${esc(t('res.next'))}</button>`;
   } else {
-    html += `<p class="muted small" style="width:100%">Waiting for ${esc(member(app.state.hostId)?.name || 'the host')} to ${over ? 'start a new game' : 'deal the next round'}…</p>`;
+    const name = member(app.state.hostId)?.name || t('theHost');
+    html += `<p class="muted small" style="width:100%">${esc(t(over ? 'res.waitNew' : 'res.waitNext', { name }))}</p>`;
   }
   box.innerHTML = html;
 }
@@ -1023,42 +1080,59 @@ function renderResultsActions() {
 function showScoreboard() {
   const g = app.state?.game;
   if (!g) return;
-  const ids = g.players.map(p => p.id).sort((a, b) => (g.players.find(p => p.id === b).score - g.players.find(p => p.id === a).score));
+  app.resultsView = 'scores';
+  const scoreOf = id => g.players.find(p => p.id === id).score;
+  const ids = g.players.map(p => p.id).sort((a, b) => scoreOf(b) - scoreOf(a));
   const scores = Object.fromEntries(g.players.map(p => [p.id, p.score]));
   const target = g.settings.targetScore;
   $('#results-body').innerHTML = `
-    <p class="results-title">Scoreboard</p>
-    <p class="results-sub">Round ${g.round}${target ? ` · first to ${target} points` : ' · one round decides it'}</p>
-    <table class="results-table"><tbody>${scoreRows(ids, scores, target, id => `<td class="num muted">${g.players.find(p => p.id === id).count} cards</td>`)}</tbody></table>
+    <p class="results-title">${esc(t('sb.title'))}</p>
+    <p class="results-sub">${esc(target ? t('sb.subTarget', { n: g.round, target }) : t('sb.subSingle', { n: g.round }))}</p>
+    <table class="results-table"><tbody>${scoreRows(ids, scores, target, id => `<td class="num muted">${esc(t('cards.count', { n: g.players.find(p => p.id === id).count }))}</td>`)}</tbody></table>
     ${rulesSummary(g.settings)}`;
-  $('#results-actions').innerHTML = '<button class="btn primary" data-close>Close</button>';
+  $('#results-actions').innerHTML = `<button class="btn primary" data-close>${esc(t('modal.close'))}</button>`;
   openModal('results');
 }
 
 function rulesSummary(st) {
-  const on = SETTINGS_UI.filter(s => s.type === 'bool' && st[s.key] && !(s.key === 'challenge' && st.stacking)).map(s => s.label);
-  return `<p class="muted small" style="margin-top:14px">House rules: ${on.length ? on.join(', ') : 'classic'} · UNO penalty ${st.unoPenalty}${st.turnTimer ? ` · ${st.turnTimer}s timer` : ''}</p>`;
+  const on = SETTINGS_UI
+    .filter(s => s.type === 'bool' && st[s.key] && !(s.key === 'challenge' && st.stacking))
+    .map(s => t(`set.${s.key}`));
+  const text = t('sb.rules', { list: on.length ? on.join(', ') : t('sb.classic'), n: st.unoPenalty })
+    + (st.turnTimer ? t('sb.timer', { n: st.turnTimer }) : '');
+  return `<p class="muted small" style="margin-top:14px">${esc(text)}</p>`;
 }
 
 // ================================================================
 // chat & reactions
 // ================================================================
 
-function addChat(m, live) {
-  const list = $('#chat-list');
+function chatText(m) {
+  return m.system && m.code ? t(`sys.${m.code}`, m.params || {}) : m.text;
+}
+
+function chatEl(m) {
   const div = document.createElement('div');
   const mine = m.from && m.from === app.session?.id;
   if (m.system) {
     div.className = 'msg system';
-    div.textContent = m.text;
+    div.textContent = chatText(m);
   } else {
     div.className = `msg${mine ? ' me' : ''}`;
     div.innerHTML = `<span class="bubble-text"><b style="color:${safeColor(m.color)}">${esc(m.name)}</b>${esc(m.text)}</span>`;
   }
-  list.appendChild(div);
+  return div;
+}
+
+function addChat(m, live) {
+  app.chatMsgs.push(m);
+  if (app.chatMsgs.length > 150) app.chatMsgs.shift();
+  const list = $('#chat-list');
+  list.appendChild(chatEl(m));
   while (list.children.length > 150) list.firstChild.remove();
   list.scrollTop = list.scrollHeight;
   if (!live || m.system) return;
+  const mine = m.from === app.session?.id;
   if (!(app.drawerOpen && app.drawerTab === 'chat')) {
     app.unread++;
     updateBadge();
@@ -1093,7 +1167,7 @@ function toggleDrawer(open = !app.drawerOpen) {
 
 function setDrawerTab(tab) {
   app.drawerTab = tab;
-  for (const t of $$('.drawer .tab')) t.classList.toggle('active', t.dataset.tab === tab);
+  for (const el of $$('.drawer .tab')) el.classList.toggle('active', el.dataset.tab === tab);
   $('#chat-list').classList.toggle('hidden', tab !== 'chat');
   $('#log-list').classList.toggle('hidden', tab !== 'log');
   $('#chat-form').classList.toggle('hidden', tab !== 'chat');
@@ -1101,6 +1175,40 @@ function setDrawerTab(tab) {
   if (tab === 'chat') { app.unread = 0; updateBadge(); }
   const list = tab === 'chat' ? $('#chat-list') : $('#log-list');
   list.scrollTop = list.scrollHeight;
+}
+
+// ================================================================
+// language switching: redraw everything that was built from text
+// ================================================================
+
+function relabel() {
+  labelSettingsForm();
+  updateMuteButtons();
+  renderRoomList();
+  renderAddresses($('#home-addresses'));
+
+  const chat = $('#chat-list');
+  chat.innerHTML = '';
+  for (const m of app.chatMsgs) chat.appendChild(chatEl(m));
+  chat.scrollTop = chat.scrollHeight;
+
+  $('#log-list').innerHTML = '';
+  for (const ev of app.logEvents) logEvent(ev, false);
+
+  // force the keyed renderers to rebuild
+  app.lobbySig = '';
+  seatsSig = '';
+  drawSig = '';
+  discardSig = '';
+  $('#hand').innerHTML = '';
+  if (app.state) {
+    const wasBooting = app.booting;
+    app.booting = true; // re-render quietly, no replayed sounds/animations
+    render(app.state);
+    app.booting = wasBooting;
+    if (isOpen('results')) (app.resultsView === 'scores' ? showScoreboard() : showResults(false));
+  }
+  document.title = t('title.page');
 }
 
 // ================================================================
@@ -1128,13 +1236,15 @@ function updateMuteButtons() {
 
 async function leaveRoom() {
   await act('leave');
-  leaveToHome('You left the room');
+  leaveToHome(t('toast.left'));
 }
 
 function wire() {
+  applyStatic();
   buildSettingsForm();
   $('#reactions').innerHTML = REACTIONS.map(e => `<button type="button" data-react="${e}">${e}</button>`).join('');
   updateMuteButtons();
+  onLangChange(relabel);
 
   const nameInput = $('#name-input');
   nameInput.value = store.get('name', '');
@@ -1157,7 +1267,7 @@ function wire() {
   $('#btn-start').addEventListener('click', () => act('start'));
   $('#lobby-players').addEventListener('click', e => {
     const k = e.target.closest('[data-kick]');
-    if (k && confirmTap(k, 'Sure?')) act('kick', { target: k.dataset.kick });
+    if (k && confirmTap(k, t('confirm.sure'))) act('kick', { target: k.dataset.kick });
   });
 
   $('#hand').addEventListener('click', e => {
@@ -1179,8 +1289,9 @@ function wire() {
     app.sortMode = SORT_MODES[(SORT_MODES.indexOf(app.sortMode) + 1) % SORT_MODES.length];
     store.set('sort', app.sortMode);
     if (app.state?.game) {
-      renderHand(app.state.game, app.state.game.current === me() && app.state.game.phase === 'play');
-      $('#btn-sort').textContent = SORT_LABEL[app.sortMode];
+      const g = app.state.game;
+      renderHand(g, g.current === me() && g.phase === 'play');
+      $('#btn-sort').textContent = t(`sort.${app.sortMode}`);
     }
   });
   $('#opponents').addEventListener('click', e => {
@@ -1220,9 +1331,13 @@ function wire() {
     if (!btn) return;
     switch (btn.dataset.action) {
       case 'leave':
-        if (app.state?.game && app.state.game.phase === 'play' && !confirmTap(btn, 'Tap again to leave')) return;
+        if (app.state?.game && app.state.game.phase === 'play' && !confirmTap(btn, t('confirm.leave'))) return;
         closeAllModals();
         leaveRoom();
+        break;
+      case 'lang':
+        setLang(getLang() === 'fr' ? 'en' : 'fr');
+        toast(t('toast.lang'), 'good', 1500);
         break;
       case 'rules': openModal('rules'); break;
       case 'mute': setMuted(!isMuted()); updateMuteButtons(); if (!isMuted()) sfx.turn(); break;
@@ -1234,11 +1349,11 @@ function wire() {
         break;
       case 'fullscreen':
         if (document.fullscreenElement) document.exitFullscreen?.();
-        else document.documentElement.requestFullscreen?.().catch(() => toast('Fullscreen not available', 'error'));
+        else document.documentElement.requestFullscreen?.().catch(() => toast(t('toast.fullscreenNA'), 'error'));
         closeModal('menu');
         break;
       case 'end-game':
-        if (!confirmTap(btn, 'Tap again: end for everyone')) return;
+        if (!confirmTap(btn, t('confirm.end'))) return;
         closeModal('menu');
         act('lobby');
         break;
@@ -1246,7 +1361,7 @@ function wire() {
     }
   });
 
-  $$('.drawer .tab').forEach(t => t.addEventListener('click', () => setDrawerTab(t.dataset.tab)));
+  $$('.drawer .tab').forEach(el => el.addEventListener('click', () => setDrawerTab(el.dataset.tab)));
   $('#chat-form').addEventListener('submit', e => {
     e.preventDefault();
     const input = $('#chat-input');
@@ -1282,7 +1397,7 @@ function wire() {
 
   window.addEventListener('resize', layoutHand);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) document.title = 'UNO Night';
+    if (!document.hidden) document.title = t('title.page');
   });
   // Phones kill background connections: reconnect when we come back.
   window.addEventListener('pageshow', () => {
@@ -1306,8 +1421,8 @@ function boot() {
   if (roomParam) {
     $('#code-input').value = roomParam;
     const name = $('#name-input');
-    if (name.value) toast(`Press Join to enter room ${roomParam}`, 'info', 3000);
-    else { name.focus(); toast(`Enter your name, then Join room ${roomParam}`, 'info', 3500); }
+    if (name.value) toast(t('toast.pressJoin', { code: roomParam }), 'info', 3000);
+    else { name.focus(); toast(t('toast.enterNameJoin', { code: roomParam }), 'info', 3500); }
   }
 }
 

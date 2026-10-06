@@ -25,7 +25,7 @@ const LIMITS = {
   turnTimer: [0, 300],
 };
 
-class GameError extends Error {}
+const { GameError } = require('./messages');
 
 function sanitizeSettings(input, base = DEFAULT_SETTINGS) {
   const out = { ...DEFAULT_SETTINGS, ...base };
@@ -73,7 +73,7 @@ function cardPoints(card) {
 
 class UnoGame {
   constructor(playerIds, settings = {}, { rng = Math.random, now = Date.now } = {}) {
-    if (!Array.isArray(playerIds) || playerIds.length < 2) throw new GameError('Need at least 2 players');
+    if (!Array.isArray(playerIds) || playerIds.length < 2) throw new GameError('needTwoPlayers');
     this.rng = rng;
     this.now = now;
     this.id = Math.floor(rng() * 1e9).toString(36) + now().toString(36);
@@ -148,13 +148,13 @@ class UnoGame {
   }
 
   assertPlaying() {
-    if (this.phase !== 'play') throw new GameError('The round is over');
+    if (this.phase !== 'play') throw new GameError('roundIsOver');
   }
 
   assertTurn(pid) {
     this.assertPlaying();
-    if (!this.hands[pid]) throw new GameError('You are not in this game');
-    if (pid !== this.current) throw new GameError('Not your turn');
+    if (!this.hands[pid]) throw new GameError('notInGame');
+    if (pid !== this.current) throw new GameError('notYourTurn');
   }
 
   // ---------- rounds ----------
@@ -225,14 +225,14 @@ class UnoGame {
   }
 
   nextRound() {
-    if (this.phase !== 'roundOver') throw new GameError('The round is not over');
-    if (this.players.length < 2) throw new GameError('Need at least 2 players');
+    if (this.phase !== 'roundOver') throw new GameError('roundNotOver');
+    if (this.players.length < 2) throw new GameError('needTwoPlayers');
     this.dealer = (this.dealer + 1) % this.players.length;
     this.startRound();
   }
 
   addPlayer(pid) {
-    if (this.phase === 'play') throw new GameError('Wait for the round to end');
+    if (this.phase === 'play') throw new GameError('waitRoundEnd');
     if (this.players.includes(pid)) return;
     this.players.push(pid);
     this.scores[pid] = 0;
@@ -301,26 +301,26 @@ class UnoGame {
   play(pid, cardId, opts = {}) {
     this.assertPlaying();
     const hand = this.hands[pid];
-    if (!hand) throw new GameError('You are not in this game');
+    if (!hand) throw new GameError('notInGame');
     const idx = hand.findIndex(c => c.id === cardId);
-    if (idx < 0) throw new GameError('You do not have that card');
+    if (idx < 0) throw new GameError('noCard');
     const card = hand[idx];
     const jumpIn = pid !== this.current;
     if (!this.canPlay(pid, card)) {
-      if (jumpIn) throw new GameError('Not your turn');
-      if (this.drawn !== null) throw new GameError('You can only play the card you drew (or pass)');
-      if (this.pending.count > 0) throw new GameError(`Stack a draw card or take ${this.pending.count}`);
-      throw new GameError('That card does not match');
+      if (jumpIn) throw new GameError('notYourTurn');
+      if (this.drawn !== null) throw new GameError('onlyDrawn');
+      if (this.pending.count > 0) throw new GameError('stackOrTake', { count: this.pending.count });
+      throw new GameError('noMatch');
     }
 
     let chosen = card.color;
     if (card.color === 'wild') {
-      if (!COLORS.includes(opts.color)) throw new GameError('Pick a color for the wild card');
+      if (!COLORS.includes(opts.color)) throw new GameError('pickColor');
       chosen = opts.color;
     }
     const swap = this.settings.sevenZero && card.value === '7' && hand.length > 1;
     if (swap && (opts.target === pid || !this.hands[opts.target])) {
-      throw new GameError('Pick a player to swap hands with');
+      throw new GameError('pickTarget');
     }
 
     const prevColor = this.color;
@@ -422,7 +422,7 @@ class UnoGame {
 
   draw(pid) {
     this.assertTurn(pid);
-    if (this.drawn !== null) throw new GameError('Play the card you drew or pass');
+    if (this.drawn !== null) throw new GameError('playOrPass');
     this.vulnerable.clear();
 
     if (this.pending.count > 0) {
@@ -457,8 +457,8 @@ class UnoGame {
 
   pass(pid) {
     this.assertTurn(pid);
-    if (this.drawn === null) throw new GameError('Draw a card first');
-    if (this.settings.forcePlay) throw new GameError('Forced play is on: you must play the card you drew');
+    if (this.drawn === null) throw new GameError('drawFirst');
+    if (this.settings.forcePlay) throw new GameError('forcedPlay');
     this.vulnerable.clear();
     this.drawn = null;
     this.emit('pass', { player: pid });
@@ -467,7 +467,7 @@ class UnoGame {
 
   challengeDraw4(pid) {
     this.assertTurn(pid);
-    if (!this.challenge) throw new GameError('There is nothing to challenge');
+    if (!this.challenge) throw new GameError('nothingToChallenge');
     const { offender, guilty } = this.challenge;
     this.challenge = null;
     this.pending = { count: 0, type: null };
@@ -486,8 +486,8 @@ class UnoGame {
   callUno(pid) {
     this.assertPlaying();
     const hand = this.hands[pid];
-    if (!hand) throw new GameError('You are not in this game');
-    if (hand.length > 2) throw new GameError('You can only call UNO with 2 or fewer cards');
+    if (!hand) throw new GameError('notInGame');
+    if (hand.length > 2) throw new GameError('unoTooMany');
     if (this.unoSafe.has(pid) && !this.vulnerable.has(pid)) return false;
     this.unoSafe.add(pid);
     this.vulnerable.delete(pid);
@@ -497,9 +497,9 @@ class UnoGame {
 
   catchUno(pid, target) {
     this.assertPlaying();
-    if (!this.hands[pid]) throw new GameError('You are not in this game');
-    if (pid === target) throw new GameError('You cannot catch yourself — call UNO!');
-    if (!this.vulnerable.has(target)) throw new GameError('Too late!');
+    if (!this.hands[pid]) throw new GameError('notInGame');
+    if (pid === target) throw new GameError('catchSelf');
+    if (!this.vulnerable.has(target)) throw new GameError('tooLate');
     this.vulnerable.delete(target);
     this.emit('caught', { player: target, by: pid });
     this.give(target, this.settings.unoPenalty, 'caught');

@@ -143,6 +143,8 @@ input::placeholder { color: rgba(255,255,255,.35); }
 
 /* ---------- home ---------- */
 #screen-home { overflow-y: auto; }
+.home-lang { position: absolute; top: max(10px, env(safe-area-inset-top)); right: 12px; z-index: 5; }
+.lang-btn { font-weight: 800; letter-spacing: .5px; }
 .home {
   max-width: 440px;
   margin: 0 auto;

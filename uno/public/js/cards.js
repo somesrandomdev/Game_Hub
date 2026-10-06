@@ -1,17 +1,14 @@
+import { t } from './i18n.js';
+
 // Card rendering: everything is CSS + inline SVG so the game works fully offline.
 
 const SKIP_SVG = `<svg viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="34" fill="none" stroke="currentColor" stroke-width="14"/><line x1="26" y1="74" x2="74" y2="26" stroke="currentColor" stroke-width="14" stroke-linecap="round"/></svg>`;
 const REVERSE_SVG = `<svg viewBox="0 0 100 100" aria-hidden="true"><path d="M22 58 L22 40 Q22 28 34 28 L70 28" fill="none" stroke="currentColor" stroke-width="11" stroke-linecap="round"/><path d="M62 14 L80 28 L62 42 Z" fill="currentColor"/><path d="M78 42 L78 60 Q78 72 66 72 L30 72" fill="none" stroke="currentColor" stroke-width="11" stroke-linecap="round"/><path d="M38 58 L20 72 L38 86 Z" fill="currentColor"/></svg>`;
 
-const COLOR_NAMES = { red: 'Red', yellow: 'Yellow', green: 'Green', blue: 'Blue', wild: '' };
-const VALUE_NAMES = { skip: 'Skip', reverse: 'Reverse', draw2: 'Draw Two', wild: 'Wild', wild4: 'Wild Draw Four' };
-
 export const COLOR_HEX = { red: '#e5322d', yellow: '#f7c600', green: '#2fa84f', blue: '#1f78d1' };
 
 export function cardName(card) {
-  if (!card) return '';
-  if (card.color === 'wild') return VALUE_NAMES[card.value];
-  return `${COLOR_NAMES[card.color]} ${VALUE_NAMES[card.value] || card.value}`;
+  return card ? t('cardName', card) : '';
 }
 
 function centerSymbol(card) {

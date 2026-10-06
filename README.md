@@ -4,7 +4,7 @@ Browser games to play with friends during the break, on the same Wi-Fi or a phon
 
 | Game | Players | Folder |
 |---|---|---|
-| 🃏 **UNO Night**: full rules, house rules, bots, chat | 2–10 | [`uno/`](uno/) |
+| 🃏 **UNO Night**: full rules, house rules, bots, chat, English/Français | 2–10 | [`uno/`](uno/) |
 | *more coming…* | | |
 
 ## Quick start

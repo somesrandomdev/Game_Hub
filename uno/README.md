@@ -21,6 +21,7 @@ Or from a terminal: `node server.js` (optional port: `node server.js 8080`).
 - **Autopilot** for anyone who disconnects; reload or reopen the page to take your seat back
 - Players who join mid-game are dealt in at the next round
 - Chat, emoji reactions, game log, sounds generated in code, animations, confetti
+- **English & French** 🌐: each player picks their own language (French browsers get it automatically)
 - Works on phones (fullscreen option in the ☰ menu)
 - Keyboard: `D` draw · `P` pass · `U` UNO · `C` challenge · `S` sort · `T` chat · `Esc` close
 

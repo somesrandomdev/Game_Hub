@@ -9,6 +9,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { UnoGame, GameError, DEFAULT_SETTINGS, sanitizeSettings } = require('./src/game');
+const { errorText, systemText } = require('./src/messages');
 const { chooseMove, applyMove } = require('./src/ai');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -111,7 +112,7 @@ class Room {
     const m = this.members.get(id);
     if (!m) return;
     for (const res of m.clients) {
-      sse(res, { type: 'kicked', reason: reason || 'You left the room' });
+      sse(res, { type: 'kicked', reason: reason || 'left' });
       res.end();
     }
     m.clients.clear();
@@ -140,7 +141,7 @@ class Room {
     this.sendAll({ type: 'chat', msg });
   }
 
-  system(text) { this.pushChat({ system: true, text }); }
+  system(code, params = {}) { this.pushChat({ system: true, code, params, text: systemText(code, params) }); }
 
   view(memberId) {
     const members = [...this.members.values()].map(m => ({
@@ -245,7 +246,7 @@ class Room {
           if (this.members.get(this.hostId)?.connected) return;
           this.pickNewHost();
           const nh = this.members.get(this.hostId);
-          if (nh) this.system(`${nh.name} is now the host`);
+          if (nh) this.system('newHost', { name: nh.name });
           this.broadcast();
         });
       }
@@ -270,48 +271,48 @@ class Room {
   handleAction(m, body) {
     const g = this.game;
     const isHost = this.hostId === m.id;
-    const needHost = () => { if (!isHost) throw new GameError('Only the host can do that'); };
-    const needGame = () => { if (!this.game) throw new GameError('No game in progress'); return this.game; };
+    const needHost = () => { if (!isHost) throw new GameError('hostOnly'); };
+    const needGame = () => { if (!this.game) throw new GameError('noGame'); return this.game; };
 
     switch (body.action) {
       case 'settings':
         needHost();
-        if (g && g.phase !== 'gameOver') throw new GameError('Change rules between games');
+        if (g && g.phase !== 'gameOver') throw new GameError('rulesBetweenGames');
         this.settings = sanitizeSettings(body.settings, this.settings);
         break;
       case 'addBot': {
         needHost();
-        if (this.members.size >= MAX_MEMBERS) throw new GameError('The room is full');
+        if (this.members.size >= MAX_MEMBERS) throw new GameError('roomFull');
         const used = new Set([...this.members.values()].map(x => x.name));
         const name = BOT_NAMES.find(n => !used.has(n)) || 'Bot';
         const bot = this.addMember({ name, isBot: true });
-        this.system(`${bot.name} 🤖 joined${bot.waiting ? ' (next round)' : ''}`);
+        this.system('botJoined', { name: bot.name, waiting: bot.waiting });
         break;
       }
       case 'kick': {
         needHost();
         const target = this.members.get(body.target);
-        if (!target) throw new GameError('No such player');
-        if (target.id === m.id) throw new GameError('Use Leave instead');
-        this.removeMember(target.id, 'The host removed you from the room');
-        this.system(`${target.name} was removed`);
+        if (!target) throw new GameError('noSuchPlayer');
+        if (target.id === m.id) throw new GameError('useLeave');
+        this.removeMember(target.id, 'kicked');
+        this.system('removed', { name: target.name });
         break;
       }
       case 'start': {
         needHost();
-        if (g && g.phase !== 'gameOver') throw new GameError('A game is already running');
+        if (g && g.phase !== 'gameOver') throw new GameError('gameRunning');
         const ids = [...this.members.keys()];
-        if (ids.length < 2) throw new GameError('Need at least 2 players — add a bot!');
+        if (ids.length < 2) throw new GameError('needTwoBot');
         for (const x of this.members.values()) x.waiting = false;
         this.game = new UnoGame(ids, this.settings);
         this.plans.clear();
-        this.system(`Game on! First to ${this.settings.targetScore || 'win a round'}${this.settings.targetScore ? ' points' : ''}.`);
+        this.system('gameOn', { target: this.settings.targetScore });
         break;
       }
       case 'nextRound': {
         needHost();
         const game = needGame();
-        if (game.phase !== 'roundOver') throw new GameError('The round is not over');
+        if (game.phase !== 'roundOver') throw new GameError('roundNotOver');
         for (const x of this.members.values()) {
           if (x.waiting) { game.addPlayer(x.id); x.waiting = false; }
         }
@@ -322,7 +323,7 @@ class Room {
         needHost();
         this.game = null;
         for (const x of this.members.values()) x.waiting = false;
-        this.system('Back to the lobby');
+        this.system('lobby');
         break;
       case 'play':
         needGame().play(m.id, Number(body.cardId), { color: body.color, target: body.target });
@@ -341,15 +342,15 @@ class Room {
         return false;
       }
       case 'react':
-        if (!REACTIONS.includes(body.emoji)) throw new GameError('Unknown reaction');
+        if (!REACTIONS.includes(body.emoji)) throw new GameError('unknownReaction');
         this.sendAll({ type: 'react', from: m.id, emoji: body.emoji });
         return false;
       case 'leave':
-        this.system(`${m.name} left`);
-        this.removeMember(m.id, 'You left the room');
+        this.system('left', { name: m.name });
+        this.removeMember(m.id, 'left');
         break;
       default:
-        throw new GameError('Unknown action');
+        throw new GameError('unknownAction');
     }
     return true;
   }
@@ -357,6 +358,10 @@ class Room {
 
 function sse(res, msg) {
   res.write(`data: ${JSON.stringify(msg)}\n\n`);
+}
+
+function fail(res, status, code, params) {
+  json(res, status, { error: errorText(code, params), code, params });
 }
 
 function json(res, status, data) {
@@ -375,12 +380,12 @@ function readBody(req) {
     const chunks = [];
     req.on('data', chunk => {
       size += chunk.length;
-      if (size > 64 * 1024) { reject(new GameError('Request too large')); req.destroy(); return; }
+      if (size > 64 * 1024) { reject(new GameError('requestTooLarge')); req.destroy(); return; }
       chunks.push(chunk);
     });
     req.on('end', () => {
       if (!chunks.length) return resolve({});
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { reject(new GameError('Bad JSON')); }
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { reject(new GameError('badJson')); }
     });
     req.on('error', reject);
   });
@@ -414,7 +419,7 @@ function serveStatic(req, res, pathname) {
 
 function openStream(req, res, url) {
   const { room, member } = findMember(url.searchParams.get('code'), url.searchParams.get('token'));
-  if (!member) return json(res, 404, { error: 'Room or player not found' });
+  if (!member) return fail(res, 404, 'memberNotFound');
   req.socket.setTimeout(0);
   req.socket.setNoDelay(true);
   res.writeHead(200, {
@@ -429,7 +434,7 @@ function openStream(req, res, url) {
   member.connected = true;
   member.disconnectedAt = null;
   sse(res, { type: 'chatHistory', messages: room.chat });
-  if (!wasConnected && room.members.size > 1) room.system(`${member.name} connected`);
+  if (!wasConnected && room.members.size > 1) room.system('connected', { name: member.name });
   room.broadcast();
 
   req.on('close', () => {
@@ -458,17 +463,17 @@ async function handleApi(req, res, url) {
         }));
       return json(res, 200, { rooms: list });
     }
-    return json(res, 404, { error: 'Not found' });
+    return fail(res, 404, 'notFound');
   }
 
-  if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
+  if (req.method !== 'POST') return fail(res, 405, 'methodNotAllowed');
   const body = await readBody(req);
 
   if (route === 'create') {
     const room = new Room(newRoomCode());
     rooms.set(room.code, room);
     const m = room.addMember({ name: cleanName(body.name) });
-    room.system(`${m.name} created the room`);
+    room.system('created', { name: m.name });
     console.log(`Room ${room.code} created by ${m.name}`);
     return json(res, 200, { code: room.code, id: m.id, token: m.token });
   }
@@ -476,30 +481,30 @@ async function handleApi(req, res, url) {
   if (route === 'join') {
     const code = String(body.code || '').toUpperCase().trim();
     const room = rooms.get(code);
-    if (!room) return json(res, 404, { error: `No room called ${code || '(empty)'}` });
+    if (!room) return fail(res, 404, 'roomNotFound', { code });
     const existing = body.token && [...room.members.values()].find(m => m.token === body.token);
     if (existing) return json(res, 200, { code, id: existing.id, token: existing.token });
-    if (room.members.size >= MAX_MEMBERS) return json(res, 409, { error: 'That room is full (10 players max)' });
+    if (room.members.size >= MAX_MEMBERS) return fail(res, 409, 'roomFullMax');
     const m = room.addMember({ name: cleanName(body.name) });
-    room.system(`${m.name} joined${m.waiting ? ' — they will be dealt in next round' : ''}`);
+    room.system('joined', { name: m.name, waiting: m.waiting });
     room.broadcast();
     return json(res, 200, { code, id: m.id, token: m.token });
   }
 
   if (route === 'check') {
     const { member } = findMember(body.code, body.token);
-    return member ? json(res, 200, { ok: true }) : json(res, 404, { error: 'Session expired' });
+    return member ? json(res, 200, { ok: true }) : fail(res, 404, 'sessionExpired');
   }
 
   if (route === 'action') {
     const { room, member } = findMember(body.code, body.token);
-    if (!member) return json(res, 404, { error: 'Room or player not found' });
+    if (!member) return fail(res, 404, 'memberNotFound');
     const changed = room.handleAction(member, body);
     if (changed && rooms.has(room.code)) room.broadcast();
     return json(res, 200, { ok: true });
   }
 
-  return json(res, 404, { error: 'Not found' });
+  return fail(res, 404, 'notFound');
 }
 
 const server = http.createServer(async (req, res) => {
@@ -507,11 +512,11 @@ const server = http.createServer(async (req, res) => {
   try {
     if (url.pathname.startsWith('/api/')) await handleApi(req, res, url);
     else if (req.method === 'GET' || req.method === 'HEAD') serveStatic(req, res, url.pathname);
-    else json(res, 405, { error: 'Method not allowed' });
+    else fail(res, 405, 'methodNotAllowed');
   } catch (err) {
-    if (err instanceof GameError) return json(res, 400, { error: err.message });
+    if (err instanceof GameError) return fail(res, 400, err.code, err.params);
     console.error(err);
-    if (!res.headersSent) json(res, 500, { error: 'Server error' });
+    if (!res.headersSent) fail(res, 500, 'serverError');
   }
 });
 server.keepAliveTimeout = 65000;
