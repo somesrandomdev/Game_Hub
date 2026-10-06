@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a1a12">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>UNO Night</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='12' y='4' width='40' height='56' rx='6' fill='%23e5322d' stroke='white' stroke-width='3'/%3E%3Cellipse cx='32' cy='32' rx='13' ry='22' transform='rotate(30 32 32)' fill='white'/%3E%3Ctext x='32' y='40' font-size='22' font-weight='900' text-anchor='middle' fill='%23e5322d' font-family='Arial'%3E1%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body data-color="none" data-screen="home">
+  <div id="glow" aria-hidden="true"></div>
+
+  <!-- ============ HOME ============ -->
+  <section id="screen-home" class="screen">
+    <div class="home">
+      <div class="logo-wrap">
+        <div class="logo-cards" aria-hidden="true"><i class="lc r"></i><i class="lc y"></i><i class="lc g"></i><i class="lc b"></i></div>
+        <h1 class="logo">UNO<span>night</span></h1>
+        <p class="tagline">Play with friends on the same Wi-Fi or hotspot. No internet needed.</p>
+      </div>
+
+      <div class="panel home-panel">
+        <label class="field">
+          <span>Your name</span>
+          <input id="name-input" maxlength="16" autocomplete="nickname" placeholder="e.g. Khalil" spellcheck="false">
+        </label>
+        <button id="btn-create" class="btn primary big">Create a room</button>
+        <div class="divider"><span>or join a friend</span></div>
+        <form id="join-form" class="join-row">
+          <input id="code-input" maxlength="4" placeholder="CODE" autocomplete="off" spellcheck="false" aria-label="Room code">
+          <button class="btn" type="submit">Join</button>
+        </form>
+        <div id="room-list" class="room-list"></div>
+      </div>
+
+      <div class="panel home-panel subtle">
+        <h3>Friends join from</h3>
+        <div id="home-addresses" class="addresses"><span class="muted">Looking up addresses…</span></div>
+        <button class="btn ghost sm" data-action="rules">How to play &amp; connect</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ LOBBY ============ -->
+  <section id="screen-lobby" class="screen hidden">
+    <header class="topbar">
+      <button class="btn ghost sm" data-action="leave">← Leave</button>
+      <div class="room-code"><small>ROOM</small><strong id="lobby-code">----</strong></div>
+      <div class="tb-right">
+        <button class="btn ghost icon" data-action="rules" title="Rules">?</button>
+        <button class="btn ghost icon mute-btn" data-action="mute" title="Sound"></button>
+        <button class="btn ghost icon chat-btn" data-action="chat" title="Chat">💬<span class="badge hidden"></span></button>
+      </div>
+    </header>
+    <div class="lobby">
+      <div class="panel">
+        <h2>Players <span id="lobby-count" class="pill"></span></h2>
+        <ul id="lobby-players" class="player-list"></ul>
+        <button id="btn-add-bot" class="btn sm">＋ Add bot</button>
+      </div>
+      <div class="panel">
+        <h2>House rules <span id="rules-lock" class="pill muted"></span></h2>
+        <form id="settings-form" class="settings" onsubmit="return false"></form>
+      </div>
+      <div class="panel">
+        <h2>Invite friends</h2>
+        <p class="muted small">On the same Wi-Fi or your hotspot, they open:</p>
+        <div id="lobby-addresses" class="addresses"></div>
+        <p class="muted small">…or open the site and type the code <b id="lobby-code-2"></b>.</p>
+      </div>
+    </div>
+    <footer class="lobby-foot">
+      <button id="btn-start" class="btn primary big">Start game</button>
+      <p id="lobby-wait" class="muted"></p>
+    </footer>
+  </section>
+
+  <!-- ============ GAME ============ -->
+  <section id="screen-game" class="screen hidden">
+    <header class="topbar">
+      <button class="btn ghost icon" data-action="menu" title="Menu">☰</button>
+      <div class="tb-mid">
+        <span class="tb-code">Room <b id="g-code"></b></span>
+        <span id="g-round" class="tb-round"></span>
+      </div>
+      <div class="tb-right">
+        <button class="btn ghost icon" data-action="scores" title="Scores">🏆</button>
+        <button class="btn ghost icon" data-action="rules" title="Rules">?</button>
+        <button class="btn ghost icon mute-btn" data-action="mute" title="Sound"></button>
+        <button class="btn ghost icon chat-btn" data-action="chat" title="Chat">💬<span class="badge hidden"></span></button>
+      </div>
+    </header>
+
+    <div id="opponents" class="opponents"></div>
+
+    <div class="table">
+      <div class="table-center">
+        <div id="direction" class="direction" aria-hidden="true">
+          <svg viewBox="0 0 200 200"><defs><marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs>
+            <path d="M100 18 A82 82 0 0 1 182 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+            <path d="M100 182 A82 82 0 0 1 18 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+          </svg>
+        </div>
+        <button id="draw-pile" class="pile draw" aria-label="Draw pile"></button>
+        <div id="discard-pile" class="pile discard" aria-label="Discard pile"></div>
+      </div>
+      <div id="status" class="status"></div>
+      <div id="timer" class="timer hidden"><i></i></div>
+    </div>
+
+    <div class="me-bar">
+      <div id="me-info" class="me-info"></div>
+      <div class="actions">
+        <button id="btn-uno" class="btn uno hidden">UNO!</button>
+        <button id="btn-challenge" class="btn warn hidden">Challenge!</button>
+        <button id="btn-draw" class="btn hidden">Draw</button>
+        <button id="btn-pass" class="btn hidden">Pass</button>
+        <button id="btn-sort" class="btn ghost sm" title="Change how your hand is sorted">Sort</button>
+      </div>
+    </div>
+    <div id="hand-wrap" class="hand-wrap"><div id="hand" class="hand"></div></div>
+  </section>
+
+  <!-- ============ CHAT DRAWER ============ -->
+  <aside id="drawer" class="drawer" aria-label="Chat and log">
+    <div class="drawer-tabs">
+      <button class="tab active" data-tab="chat">Chat</button>
+      <button class="tab" data-tab="log">Game log</button>
+      <button class="btn ghost icon close" data-action="chat" title="Close">✕</button>
+    </div>
+    <div id="chat-list" class="feed"></div>
+    <div id="log-list" class="feed hidden"></div>
+    <div id="reactions" class="reactions"></div>
+    <form id="chat-form" class="chat-form">
+      <input id="chat-input" maxlength="240" placeholder="Talk trash…" autocomplete="off">
+      <button class="btn sm" type="submit">Send</button>
+    </form>
+  </aside>
+
+  <!-- ============ MODALS ============ -->
+  <div id="modal-color" class="modal hidden" role="dialog" aria-label="Choose a color">
+    <div class="modal-box small">
+      <h2>Pick a color</h2>
+      <div class="color-grid">
+        <button data-color="red" class="cbtn red">Red</button>
+        <button data-color="yellow" class="cbtn yellow">Yellow</button>
+        <button data-color="green" class="cbtn green">Green</button>
+        <button data-color="blue" class="cbtn blue">Blue</button>
+      </div>
+      <button class="btn ghost sm" data-close>Cancel</button>
+    </div>
+  </div>
+
+  <div id="modal-target" class="modal hidden" role="dialog" aria-label="Choose a player">
+    <div class="modal-box small">
+      <h2>Swap hands with…</h2>
+      <div id="target-list" class="target-list"></div>
+      <button class="btn ghost sm" data-close>Cancel</button>
+    </div>
+  </div>
+
+  <div id="modal-results" class="modal hidden" role="dialog" aria-label="Round results">
+    <div class="modal-box">
+      <div id="results-body"></div>
+      <div id="results-actions" class="modal-actions"></div>
+    </div>
+  </div>
+
+  <div id="modal-menu" class="modal hidden" role="dialog" aria-label="Menu">
+    <div class="modal-box small">
+      <h2>Menu</h2>
+      <div class="menu-list">
+        <button class="btn" data-action="fullscreen">⛶ Toggle fullscreen</button>
+        <button class="btn" data-action="end-game" id="btn-end-game">⏹ End game for everyone</button>
+        <button class="btn danger" data-action="leave">🚪 Leave room</button>
+      </div>
+      <button class="btn ghost sm" data-close>Close</button>
+    </div>
+  </div>
+
+  <div id="modal-rules" class="modal hidden" role="dialog" aria-label="Rules">
+    <div class="modal-box wide">
+      <h2>How to play</h2>
+      <div class="rules">
+        <h3>📶 Connecting (no internet needed)</h3>
+        <ol>
+          <li>One PC runs <code>start.bat</code> (that's the server).</li>
+          <li>Everyone must be on the <b>same network</b>: the same Wi-Fi router, <i>or</i> turn on <b>Windows Mobile Hotspot</b> (Settings → Network → Mobile hotspot) and have friends join it. The router doesn't need internet.</li>
+          <li>Friends open the address shown (like <code>http://192.168.1.8:3000</code>) in any browser, including phones.</li>
+          <li>Can't connect? Run <code>allow-firewall.bat</code> once on the server PC, or click "Allow" on the Windows Firewall popup.</li>
+        </ol>
+        <h3>🃏 Basics</h3>
+        <p>Match the top card by <b>color</b> or <b>number/symbol</b>, or play a <b>Wild</b>. Can't (or don't want to)? Draw a card. If it's playable you may play it right away. First to empty their hand wins the round and scores points for every card left in the other players' hands (numbers = face value, action cards = 20, wilds = 50).</p>
+        <h3>⚡ Action cards</h3>
+        <ul>
+          <li><b>Skip</b>: the next player loses their turn.</li>
+          <li><b>Reverse</b>: direction flips (with 2 players it acts like Skip).</li>
+          <li><b>Draw Two</b>: the next player draws 2 and loses their turn.</li>
+          <li><b>Wild</b>: choose the next color.</li>
+          <li><b>Wild Draw Four</b>: choose the color, the next player draws 4 and loses their turn. It's only <i>legal</i> if you have no card of the current color. The victim may <b>challenge</b>: if you bluffed, you draw 4; if you were honest, they draw 6.</li>
+        </ul>
+        <h3>📣 UNO!</h3>
+        <p>Hit <b>UNO!</b> when you're down to 2 cards (before playing) or right after you drop to 1. If you forget, anyone can hit <b>Catch!</b> on you before the next player acts, and you draw a penalty.</p>
+        <h3>🏠 House rules (host picks in the lobby)</h3>
+        <ul>
+          <li><b>Stacking</b>: answer a +2 with a +2 or +4, or a +4 with a +4. The penalty grows until someone can't stack.</li>
+          <li><b>Draw until playable</b>: keep drawing until you get a card you can play.</li>
+          <li><b>Forced play</b>: if the drawn card is playable, you must play it.</li>
+          <li><b>7-0</b>: a 7 swaps your hand with a player of your choice; a 0 passes every hand along in the direction of play.</li>
+          <li><b>Jump-in</b>: holding the exact same card (color and number) as the top card? Play it any time, even out of turn. Play continues from you.</li>
+          <li><b>Turn timer</b>: when time runs out, autopilot moves for you.</li>
+        </ul>
+        <h3>💡 Tips</h3>
+        <ul>
+          <li>If someone disconnects, autopilot plays for them after 10s. Reopen the page to come back.</li>
+          <li>Add bots to fill the table or to practice solo.</li>
+          <li>Tap <b>Sort</b> to switch between sorting by color, by number, or not at all.</li>
+        </ul>
+      </div>
+      <div class="modal-actions"><button class="btn primary" data-close>Got it</button></div>
+    </div>
+  </div>
+
+  <div id="conn-banner" class="conn-banner hidden">Reconnecting…</div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <canvas id="confetti" aria-hidden="true"></canvas>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
