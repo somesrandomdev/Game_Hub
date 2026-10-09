@@ -31,7 +31,7 @@ function chooseMove(game, pid, rng = Math.random) {
   const playable = hand.filter(c => game.canPlay(pid, c));
   if (!playable.length) return game.drawn !== null ? { type: 'pass' } : { type: 'draw' };
 
-  const opponents = game.players.filter(id => id !== pid);
+  const opponents = game.active.filter(id => id !== pid);
   const next = game.players[game.nextIndex(1)];
   const nextCount = game.hands[next].length;
   const fewest = opponents.reduce((a, b) => (game.hands[a].length <= game.hands[b].length ? a : b));
@@ -48,7 +48,8 @@ function chooseMove(game, pid, rng = Math.random) {
       if (c.value === 'wild4') s += attack ? 40 : -4;
     } else {
       s += sameColor(c.color) * 3;
-      const blocks = c.value === 'skip' || c.value === 'draw2' || (c.value === 'reverse' && game.players.length === 2);
+      if (game.settings.multiPlay) s += (hand.filter(x => x.value === c.value).length - 1) * 4;
+      const blocks = c.value === 'skip' || c.value === 'draw2' || (c.value === 'reverse' && opponents.length === 1);
       if (blocks) s += attack ? 25 : 5;
       if (c.value === 'draw2') s += 3;
       if (!isNaN(Number(c.value))) s += Number(c.value) * 0.4; // shed points
@@ -63,9 +64,12 @@ function chooseMove(game, pid, rng = Math.random) {
     if (s > bestScore) { bestScore = s; best = c; }
   }
 
-  const move = { type: 'play', cardId: best.id };
-  if (best.color === 'wild') move.color = bestColor(hand, best.id, rng);
-  if (game.settings.sevenZero && best.value === '7' && hand.length > 1) move.target = fewest;
+  // dump every other card of the same number/symbol along with it
+  const twins = game.settings.multiPlay ? hand.filter(c => c.value === best.value && c.id !== best.id) : [];
+  const ids = [best.id, ...twins.map(c => c.id)];
+  const move = { type: 'play', cardId: ids.length > 1 ? ids : best.id };
+  if (best.color === 'wild') move.color = bestColor(hand.filter(c => !ids.includes(c.id)), null, rng);
+  if (game.settings.sevenZero && best.value === '7' && hand.length > ids.length) move.target = fewest;
   return move;
 }
 

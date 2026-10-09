@@ -76,6 +76,11 @@ export const sfx = {
   error: () => tone(160, { dur: 0.15, type: 'square', vol: 0.07 }),
   tick: () => tone(1500, { dur: 0.03, type: 'square', vol: 0.04 }),
   deal: (i = 0) => noise({ at: i * 0.05, dur: 0.04, vol: 0.1, freq: 4000 }),
+  slam: (power = 1) => { tone(140, { dur: 0.18, type: 'sine', vol: 0.22 * power, to: 55 }); noise({ dur: 0.09, vol: 0.18 * power, freq: 900 }); },
+  boom: () => { tone(90, { dur: 0.6, type: 'sine', vol: 0.35, to: 32 }); noise({ dur: 0.35, vol: 0.2, freq: 400 }); tone(60, { at: 0.05, dur: 0.5, type: 'triangle', vol: 0.15, to: 30 }); },
+  whoosh: () => { noise({ dur: 0.22, vol: 0.12, freq: 700 }); noise({ at: 0.06, dur: 0.2, vol: 0.08, freq: 1600 }); },
+  pick: () => tone(1800, { dur: 0.035, type: 'triangle', vol: 0.08, to: 2400 }),
+  shimmer: () => notes([[1319, 0, 0.3], [1568, 0.05, 0.3], [2093, 0.1, 0.4]], { type: 'sine', vol: 0.06 }),
 };
 
 export function isMuted() { return muted; }

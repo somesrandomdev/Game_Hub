@@ -8,6 +8,8 @@ const COLOR_EN = { red: 'red', yellow: 'yellow', green: 'green', blue: 'blue' };
 const COLOR_FR = { red: 'rouge', yellow: 'jaune', green: 'vert', blue: 'bleu' };
 const COLOR_FR_F = { red: 'rouge', yellow: 'jaune', green: 'verte', blue: 'bleue' };
 const cap = str => str.charAt(0).toUpperCase() + str.slice(1);
+const ordFr = n => (Number(n) === 1 ? '1er' : `${n}e`);
+const ordEn = n => `${n}${['th', 'st', 'nd', 'rd'][(n % 100 > 10 && n % 100 < 14) || n % 10 > 3 ? 0 : n % 10]}`;
 
 const en = {
   // ---------- static page ----------
@@ -33,7 +35,7 @@ const en = {
   'lobby.addBot': '＋ Add bot',
   'lobby.rules': 'House rules',
   'lobby.invite': 'Invite friends',
-  'lobby.inviteHint': 'On the same Wi-Fi or your hotspot, they open:',
+  'lobby.inviteHint': 'Send them a link (the 🌍 one works from anywhere, the others on your Wi-Fi):',
   'lobby.orCode': '…or open the site and type the code',
   'lobby.startGame': 'Start game',
   'game.room': 'Room',
@@ -51,6 +53,9 @@ const en = {
   'modal.close': 'Close',
   'menu.title': 'Menu',
   'menu.fullscreen': '⛶ Toggle fullscreen',
+  'menu.fx': p => `✨ Effects: ${p.on ? 'MAX' : 'off'}`,
+  'toast.fxOn': '✨ Effects on: full show!',
+  'toast.fxOff': 'Effects off: calm mode',
   'menu.end': '⏹ End game for everyone',
   'menu.leave': '🚪 Leave room',
   'rules.title': 'How to play',
@@ -77,6 +82,8 @@ const en = {
   // ---------- home ----------
   'addr.none': 'No network found on the server PC. Connect it to Wi-Fi or turn on Mobile Hotspot.',
   'addr.weak': 'probably not reachable',
+  'addr.online': '🌍 Online link: works from anywhere',
+  'addr.onlineWait': '🌍 Opening the online link…',
   'btn.copy': 'Copy',
   'rooms.rejoin': 'Rejoin as {name}',
   'rooms.rejoinTag': 'rejoin',
@@ -104,6 +111,39 @@ const en = {
   'set.sevenZero.hint': '7 swaps hands, 0 rotates all hands',
   'set.jumpIn': 'Jump-in',
   'set.jumpIn.hint': 'Play an identical card out of turn',
+  'set.multiPlay': 'Multi-card play',
+  'set.multiPlay.hint': 'Play several cards with the same number or symbol at once, any colors',
+  'set.lastStanding': 'Last one standing',
+  'set.lastStanding.hint': 'Going out doesn\'t end the round: the last player holding cards loses',
+  'set.unoLastCard': 'UNO on the last card',
+  'set.unoLastCard.hint': 'The UNO! button only shows once you hold a single card',
+
+  // ---------- multi-card play & last one standing ----------
+  'multi.hint': 'Tap other “{v}” cards to add them, then press Play',
+  'multi.play': p => `Play (${p.n}) card${s(p.n)}`,
+  'seat.place': p => `🏁 ${ordEn(p.n)} (out)`,
+  'seat.score': '{n} pts',
+  'seat.now': 'Playing',
+  'seat.next': 'Next',
+  'strip.title': 'Order of play',
+  'strip.now': 'playing',
+  'strip.next': 'next',
+  'dir.cw': 'Clockwise',
+  'dir.ccw': 'Counter-clockwise',
+  'menu.rules': '❓ How to play',
+  'menu.sound': p => `${p.on ? '🔊' : '🔇'} Sound: ${p.on ? 'on' : 'off'}`,
+  'board.title': 'Leaderboard',
+  'fx.combo': '×{n} COMBO!',
+  'board.rank': p => ordEn(p.n),
+  'me.out': '🏁 out, #{place} · {pts} pts',
+  'status.finished': "🏁 You're out (#{place})! {name}'s turn",
+  'toast.finishedMe': "🏁 You're out in place #{place}! +{pts} pts",
+  'toast.finished': '🏁 {name} is out (#{place})',
+  'ev.lastOne': '🃏 Last one!',
+  'log.finished': p => `<b>${p.who} ${p.me ? 'are' : 'is'} out</b> in place #${p.place} (+${p.pts} pts)`,
+  'log.lastOne': p => `<b>${p.who} ${p.me ? 'are' : 'is'} the last one holding cards</b> (0 pts)${p.over ? '. Game over!' : ''}`,
+  'res.lastSub': '{name} kept cards to the end: 0 points · first to {target} wins',
+  'lobby.scan': 'Scan with a phone to join',
   'opt.cards': p => `${p.n} cards`,
   'opt.oneRound': 'One round',
   'opt.points': '{n} pts',
@@ -130,7 +170,6 @@ const en = {
   // ---------- table ----------
   'game.roundTarget': 'Round {n} · first to {target}',
   'game.roundSingle': 'Round {n} · winner takes all',
-  'seat.pts': '· {n} pts',
   'seat.catch': 'Catch!',
   'seat.joinsNext': 'joins next round',
   'pile.left': '{n} left',
@@ -156,6 +195,9 @@ const en = {
   'status.drawnPass': 'Play the card you drew, or pass',
   'status.drawnForced': 'You must play the card you drew',
   'status.yourTurn': 'Your turn!',
+  'status.thenNext': ' Next: {name}',
+  'status.youNext': " · you're next!",
+  'status.youIn': ' · you play in {n} turns',
   'status.noMatch': 'Your turn: no match, draw a card',
   'status.theirTurn': "{name}'s turn",
   'status.away': ' (away, autopilot)',
@@ -292,9 +334,11 @@ const en = {
       <li><b>Wild Draw Four</b>: choose the color, the next player draws 4 and loses their turn. It's only <i>legal</i> if you have no card of the current color. The victim may <b>challenge</b>: if you bluffed, you draw 4; if you were honest, they draw 6.</li>
     </ul>
     <h3>📣 UNO!</h3>
-    <p>Hit <b>UNO!</b> when you're down to 2 cards (before playing) or right after you drop to 1. If you forget, anyone can hit <b>Catch!</b> on you before the next player acts, and you draw a penalty.</p>
+    <p>Hit <b>UNO!</b> when you're down to 2 cards (before playing) or right after you drop to 1 (with the <b>UNO on the last card</b> rule: only once you're down to 1). If you forget, anyone can hit <b>Catch!</b> on you before the next player acts, and you draw a penalty.</p>
     <h3>🏠 House rules (host picks in the lobby)</h3>
     <ul>
+      <li><b>Multi-card play</b>: play several cards with the same number or symbol in one go, whatever their colors (e.g. four 1s). Only the first has to match; the last one sets the color. Action cards add up: two +2s make +4, two Skips skip two players.</li>
+      <li><b>Last one standing</b>: emptying your hand doesn't end the round, you just sit out. The round ends when only one player still has cards, and they score 0. Everyone else scores 50 points for each player still holding cards when they went out.</li>
       <li><b>Stacking</b>: answer a +2 with a +2 or +4, or a +4 with a +4. The penalty grows until someone can't stack.</li>
       <li><b>Draw until playable</b>: keep drawing until you get a card you can play.</li>
       <li><b>Forced play</b>: if the drawn card is playable, you must play it.</li>
@@ -335,7 +379,7 @@ const fr = {
   'lobby.addBot': '＋ Ajouter un bot',
   'lobby.rules': 'Règles maison',
   'lobby.invite': 'Inviter des amis',
-  'lobby.inviteHint': 'Sur le même Wi-Fi ou ton point d\'accès, ils ouvrent :',
+  'lobby.inviteHint': 'Envoie-leur un lien (le 🌍 marche de partout, les autres sur ton Wi-Fi) :',
   'lobby.orCode': '…ou ils ouvrent le site et tapent le code',
   'lobby.startGame': 'Lancer la partie',
   'game.room': 'Salle',
@@ -353,6 +397,9 @@ const fr = {
   'modal.close': 'Fermer',
   'menu.title': 'Menu',
   'menu.fullscreen': '⛶ Plein écran',
+  'menu.fx': p => `✨ Effets : ${p.on ? 'MAX' : 'désactivés'}`,
+  'toast.fxOn': '✨ Effets activés : grand spectacle !',
+  'toast.fxOff': 'Effets désactivés : mode calme',
   'menu.end': '⏹ Terminer la partie pour tous',
   'menu.leave': '🚪 Quitter la salle',
   'rules.title': 'Comment jouer',
@@ -379,6 +426,8 @@ const fr = {
   // ---------- accueil ----------
   'addr.none': 'Aucun réseau trouvé sur le PC serveur. Connecte-le au Wi-Fi ou active le point d\'accès mobile.',
   'addr.weak': 'probablement inaccessible',
+  'addr.online': '🌍 Lien en ligne : marche de partout',
+  'addr.onlineWait': '🌍 Ouverture du lien en ligne…',
   'btn.copy': 'Copier',
   'rooms.rejoin': 'Revenir en tant que {name}',
   'rooms.rejoinTag': 'revenir',
@@ -406,6 +455,39 @@ const fr = {
   'set.sevenZero.hint': 'Le 7 échange deux mains, le 0 fait tourner toutes les mains',
   'set.jumpIn': 'Interception',
   'set.jumpIn.hint': 'Joue une carte identique même hors de ton tour',
+  'set.multiPlay': 'Pose multiple',
+  'set.multiPlay.hint': 'Pose d\'un coup plusieurs cartes du même chiffre ou symbole, toutes couleurs',
+  'set.lastStanding': 'Dernier survivant',
+  'set.lastStanding.hint': 'Vider sa main ne finit pas la manche : le dernier à avoir des cartes perd',
+  'set.unoLastCard': 'UNO à la dernière carte',
+  'set.unoLastCard.hint': "Le bouton UNO n'apparaît que quand il te reste une seule carte",
+
+  // ---------- pose multiple & dernier survivant ----------
+  'multi.hint': 'Touche d\'autres « {v} » pour les ajouter, puis Poser',
+  'multi.play': p => `Poser (${p.n}) carte${s(p.n)}`,
+  'seat.place': p => `🏁 ${ordFr(p.n)} (sorti)`,
+  'seat.score': '{n} pts',
+  'seat.now': 'Joue',
+  'seat.next': 'Suivant',
+  'strip.title': 'Ordre de jeu',
+  'strip.now': 'joue',
+  'strip.next': 'ensuite',
+  'dir.cw': 'Sens horaire',
+  'dir.ccw': 'Sens anti-horaire',
+  'menu.rules': '❓ Règles du jeu',
+  'menu.sound': p => `${p.on ? '🔊' : '🔇'} Son : ${p.on ? 'activé' : 'coupé'}`,
+  'board.title': 'Classement',
+  'fx.combo': '×{n} COMBO !',
+  'board.rank': p => ordFr(p.n),
+  'me.out': p => `🏁 fini, ${ordFr(p.place)} · ${p.pts} pts`,
+  'status.finished': p => `🏁 Tu as fini (${ordFr(p.place)}) ! Au tour de ${p.name}`,
+  'toast.finishedMe': p => `🏁 Tu as fini ${ordFr(p.place)} ! +${p.pts} pts`,
+  'toast.finished': p => `🏁 ${p.name} a fini (${ordFr(p.place)})`,
+  'ev.lastOne': '🃏 Dernier !',
+  'log.finished': p => `<b>${p.me ? 'Tu as' : `${p.who} a`} fini</b> ${ordFr(p.place)} (+${p.pts} pts)`,
+  'log.lastOne': p => `<b>${p.me ? 'Tu es' : `${p.who} est`} le dernier à avoir des cartes</b> (0 pt)${p.over ? '. Partie terminée !' : ''}`,
+  'res.lastSub': '{name} a gardé des cartes jusqu\'au bout : 0 point · le premier à {target} gagne',
+  'lobby.scan': 'Scanne avec ton téléphone pour rejoindre',
   'opt.cards': p => `${p.n} cartes`,
   'opt.oneRound': 'Une manche',
   'opt.points': '{n} pts',
@@ -432,7 +514,6 @@ const fr = {
   // ---------- table ----------
   'game.roundTarget': 'Manche {n} · premier à {target}',
   'game.roundSingle': 'Manche {n} · le gagnant rafle tout',
-  'seat.pts': '· {n} pts',
   'seat.catch': 'Contre-UNO !',
   'seat.joinsNext': 'joue à la prochaine manche',
   'pile.left': '{n} restantes',
@@ -458,6 +539,9 @@ const fr = {
   'status.drawnPass': 'Joue la carte piochée ou passe',
   'status.drawnForced': 'Tu dois jouer la carte piochée',
   'status.yourTurn': 'À toi de jouer !',
+  'status.thenNext': ' Ensuite : {name}',
+  'status.youNext': ' · tu joues juste après !',
+  'status.youIn': ' · tu joues dans {n} tours',
   'status.noMatch': 'À toi : rien de jouable, pioche une carte',
   'status.theirTurn': 'Au tour de {name}',
   'status.away': ' (absent, pilote auto)',
@@ -581,7 +665,9 @@ const fr = {
   'err.drawFirst': 'Pioche d\'abord une carte',
   'err.forcedPlay': 'Jeu obligatoire activé : tu dois jouer la carte piochée',
   'err.nothingToChallenge': 'Il n\'y a rien à contester',
-  'err.unoTooMany': 'Tu ne peux dire UNO qu\'avec 2 cartes ou moins',
+  'err.unoTooMany': 'Tu ne peux dire UNO que si un seul coup te laisse une carte',
+  'err.oneCardOnly': 'La pose multiple est désactivée : une carte à la fois',
+  'err.sameValueOnly': 'Les cartes posées ensemble doivent avoir le même chiffre ou symbole',
   'err.catchSelf': 'Tu ne peux pas te dénoncer toi-même : dis UNO !',
   'err.tooLate': 'Trop tard !',
   'err.hostOnly': 'Seul l\'hôte peut faire ça',
@@ -589,6 +675,7 @@ const fr = {
   'err.rulesBetweenGames': 'Change les règles entre deux parties',
   'err.roomFull': 'La salle est pleine',
   'err.roomFullMax': 'Cette salle est pleine (10 joueurs max)',
+  'err.tooManyRooms': 'Trop de salles ouvertes sur le serveur, réessaie plus tard',
   'err.noSuchPlayer': 'Ce joueur n\'existe pas',
   'err.useLeave': 'Utilise plutôt « Quitter »',
   'err.gameRunning': 'Une partie est déjà en cours',
@@ -634,9 +721,11 @@ const fr = {
       <li><b>Super Joker +4</b> : tu choisis la couleur, le joueur suivant pioche 4 cartes et passe son tour. Il n'est <i>légal</i> que si tu n'as aucune carte de la couleur en cours. La victime peut <b>contester</b> : si tu as bluffé, c'est toi qui pioches 4 ; si tu étais honnête, elle pioche 6.</li>
     </ul>
     <h3>📣 UNO !</h3>
-    <p>Appuie sur <b>UNO !</b> quand il te reste 2 cartes (avant de jouer) ou juste après être passé à 1. Si tu oublies, n'importe qui peut appuyer sur <b>Contre-UNO !</b> avant que le joueur suivant ne joue, et tu pioches une pénalité.</p>
+    <p>Appuie sur <b>UNO !</b> quand il te reste 2 cartes (avant de jouer) ou juste après être passé à 1 (avec la règle <b>UNO à la dernière carte</b> : seulement une fois à 1 carte). Si tu oublies, n'importe qui peut appuyer sur <b>Contre-UNO !</b> avant que le joueur suivant ne joue, et tu pioches une pénalité.</p>
     <h3>🏠 Règles maison (l'hôte choisit dans le salon)</h3>
     <ul>
+      <li><b>Pose multiple</b> : pose d'un coup plusieurs cartes du même chiffre ou symbole, quelle que soit leur couleur (par ex. quatre « 1 »). Seule la première doit correspondre ; la dernière choisit la couleur. Les cartes action s'additionnent : deux +2 font +4, deux « Passe ton tour » sautent deux joueurs.</li>
+      <li><b>Dernier survivant</b> : vider ta main ne finit pas la manche, tu sors simplement du jeu. La manche s'arrête quand un seul joueur a encore des cartes : il marque 0 point. Les autres marquent 50 points par joueur qui avait encore des cartes au moment de leur sortie.</li>
       <li><b>Cumul</b> : réponds à un +2 par un +2 ou un +4, ou à un +4 par un +4. La pénalité grossit jusqu'à ce que quelqu'un ne puisse plus cumuler.</li>
       <li><b>Piocher jusqu'à pouvoir jouer</b> : continue de piocher jusqu'à avoir une carte jouable.</li>
       <li><b>Jeu obligatoire</b> : si la carte piochée est jouable, tu dois la jouer.</li>

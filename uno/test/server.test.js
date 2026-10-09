@@ -183,3 +183,26 @@ test('autopilot covers a disconnected player', { timeout: 30000 }, async () => {
   bc.close();
   for (const r of rooms.values()) r.destroy();
 });
+
+test('long polling: held polls get updates as they happen, and a stop marks you away', { timeout: 30000 }, async () => {
+  const host = (await post('create', { name: 'Poller' })).data;
+  const poll = async cid => (await fetch(`${base}/api/poll?code=${host.code}&token=${host.token}&cid=${cid || ''}`)).json();
+
+  const first = await poll();
+  assert.ok(first.cid);
+  assert.deepEqual(first.messages.map(m => m.type).slice(0, 2), ['chatHistory', 'state']);
+  assert.equal(first.messages.find(m => m.type === 'state').state.members[0].connected, true);
+
+  // a held poll answers as soon as something changes
+  const held = poll(first.cid);
+  await new Promise(r => setTimeout(r, 300));
+  const t0 = Date.now();
+  await post('action', { code: host.code, token: host.token, action: 'addBot' });
+  const next = await held;
+  assert.ok(Date.now() - t0 < 1000);
+  assert.equal(next.messages.filter(m => m.type === 'state').pop().state.members.length, 2);
+
+  await post('action', { code: host.code, token: host.token, action: 'leave' });
+  const last = await poll(first.cid);
+  assert.ok(last.messages.some(m => m.type === 'kicked'));
+});

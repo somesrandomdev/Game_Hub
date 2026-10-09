@@ -20,7 +20,7 @@ const card = (color, value) => ({ id: nextId++, color, value });
 
 // Build a game, then rig hands/top card for a deterministic scenario.
 function rig({ players = ['a', 'b', 'c'], settings = {}, hands, top, color, turn = 0, direction = 1 }) {
-  const g = new UnoGame(players, { targetScore: 0, ...settings }, { rng: seeded(1) });
+  const g = new UnoGame(players, { targetScore: 0, multiPlay: false, lastStanding: false, ...settings }, { rng: seeded(1) });
   g.hands = {};
   for (const id of players) g.hands[id] = (hands[id] || []).slice();
   g.discard = [top];
@@ -362,6 +362,7 @@ test('views never leak other hands', () => {
 test('randomized bot games keep every invariant', () => {
   const ruleSets = [
     {},
+    { multiPlay: false, lastStanding: false },
     { stacking: true },
     { drawUntilPlayable: true, forcePlay: true },
     { sevenZero: true, jumpIn: true },
@@ -392,7 +393,7 @@ test('randomized bot games keep every invariant', () => {
       } else if (r < 0.1 && g.settings.jumpIn) {
         for (const id of g.players) {
           const c = g.hands[id].find(x => id !== g.current && g.canJumpIn(id, x));
-          if (c) { g.play(id, c.id, { target: g.players.find(x => x !== id) }); break; }
+          if (c) { g.play(id, c.id, { target: g.active.find(x => x !== id) }); break; }
         }
       } else {
         applyMove(g, g.current, chooseMove(g, g.current, rng));
@@ -403,6 +404,11 @@ test('randomized bot games keep every invariant', () => {
       assert.ok(g.turn >= 0 && g.turn < g.players.length);
       assert.ok(COLORS.includes(g.color));
       assert.ok(g.pending.count >= 0);
+      if (g.phase === 'play') {
+        assert.ok(!g.isOut(g.current), `a finished player has the turn in game ${seed}`);
+        assert.ok(g.active.length >= 2);
+        for (const id of g.finished) assert.equal(g.hands[id].length, 0);
+      }
       if (g.phase === 'play' && !g.settings.stacking && !g.challenge) assert.equal(g.pending.count, 0);
     }
     games++;
@@ -411,4 +417,180 @@ test('randomized bot games keep every invariant', () => {
   }
   assert.equal(games, 300);
   assert.ok(rounds > 0);
+});
+
+// ---------- multi-card play ----------
+
+test('several cards of the same number can be played together, any colors', () => {
+  const r5 = card('red', '5'); const b5 = card('blue', '5'); const g5 = card('green', '5');
+  const g = rig({ settings: { multiPlay: true }, hands: { a: [r5, b5, g5, card('red', '1'), card('red', '2')], b: [card('red', '9')], c: [card('red', '9')] }, top: card('red', '3') });
+  g.play('a', [r5.id, b5.id, g5.id]);
+  assert.equal(g.hands.a.length, 2);
+  assert.deepEqual(g.discard.slice(-3).map(c => c.id), [r5.id, b5.id, g5.id]);
+  assert.equal(g.color, 'green', 'the last card sets the color');
+  assert.equal(g.current, 'b');
+});
+
+test('only the first card of a group has to match', () => {
+  const b5 = card('blue', '5'); const r5 = card('red', '5');
+  const g = rig({ settings: { multiPlay: true }, hands: { a: [b5, r5, card('red', '1')], b: [card('red', '9')], c: [card('red', '9')] }, top: card('red', '3') });
+  assert.throws(() => g.play('a', [b5.id, r5.id]), e => e.code === 'noMatch');
+  g.play('a', [r5.id, b5.id]);
+  assert.equal(g.color, 'blue');
+});
+
+test('mixed values or multiPlay off are refused', () => {
+  const r5 = card('red', '5'); const r6 = card('red', '6');
+  const g = rig({ settings: { multiPlay: true }, hands: { a: [r5, r6, card('red', '1')], b: [card('red', '9')], c: [card('red', '9')] }, top: card('red', '3') });
+  assert.throws(() => g.play('a', [r5.id, r6.id]), e => e.code === 'sameValueOnly');
+  const b5 = card('blue', '5');
+  const h = rig({ hands: { a: [r5, b5, card('red', '1')], b: [card('red', '9')], c: [card('red', '9')] }, top: card('red', '3') });
+  assert.throws(() => h.play('a', [r5.id, b5.id]), e => e.code === 'oneCardOnly');
+  assert.equal(h.hands.a.length, 3);
+});
+
+test('multiple action cards add up', () => {
+  const s1 = card('red', 'skip'); const s2 = card('blue', 'skip');
+  const g = rig({ players: ['a', 'b', 'c', 'd'], settings: { multiPlay: true }, hands: { a: [s1, s2, card('red', '1')], b: [card('red', '9')], c: [card('red', '9')], d: [card('red', '9')] }, top: card('red', '3') });
+  g.play('a', [s1.id, s2.id]);
+  assert.equal(g.current, 'd', 'two skips skip two players');
+
+  const d1 = card('red', 'draw2'); const d2 = card('green', 'draw2');
+  const h = rig({ settings: { multiPlay: true }, hands: { a: [d1, d2, card('red', '1')], b: [card('red', '9')], c: [card('red', '9')] }, top: card('red', '3') });
+  h.play('a', [d1.id, d2.id]);
+  assert.equal(h.hands.b.length, 5);
+  assert.equal(h.current, 'c');
+
+  const v1 = card('red', 'reverse'); const v2 = card('blue', 'reverse');
+  const k = rig({ settings: { multiPlay: true }, hands: { a: [v1, v2, card('red', '1')], b: [card('red', '9')], c: [card('red', '9')] }, top: card('red', '3') });
+  k.play('a', [v1.id, v2.id]);
+  assert.equal(k.direction, 1, 'two reverses cancel out');
+  assert.equal(k.current, 'b');
+});
+
+test('two wild draw fours stack to eight and challenges scale', () => {
+  const w1 = card('wild', 'wild4'); const w2 = card('wild', 'wild4');
+  const g = rig({ settings: { multiPlay: true }, hands: { a: [w1, w2, card('blue', '1')], b: [card('red', '9')], c: [card('red', '9')] }, top: card('red', '3') });
+  g.play('a', [w1.id, w2.id], { color: 'green' });
+  assert.equal(g.color, 'green');
+  assert.equal(g.pending.count, 8);
+  g.challengeDraw4('b');
+  assert.equal(g.hands.b.length, 11, 'honest play: challenger takes 8 + 2');
+});
+
+test('UNO can be called before a multi-play that leaves one card', () => {
+  const r5 = card('red', '5'); const b5 = card('blue', '5');
+  const hands = { a: [r5, b5, card('red', '1')], b: [card('red', '9'), card('red', '8'), card('red', '7')], c: [card('red', '9')] };
+  const g = rig({ settings: { multiPlay: true }, hands, top: card('red', '3') });
+  assert.ok(g.view('a').canUno);
+  assert.equal(g.view('b').canUno, false);
+  assert.equal(g.callUno('a'), true);
+  g.play('a', [r5.id, b5.id]);
+  assert.equal(g.vulnerable.has('a'), false);
+  assert.throws(() => g.callUno('b'), e => e.code === 'unoTooMany');
+});
+
+test('unoLastCard: UNO only once you are down to one card', () => {
+  const r5 = card('red', '5');
+  const hands = { a: [r5, card('blue', '1')], b: [card('red', '9'), card('red', '8')], c: [card('red', '9')] };
+  const g = rig({ settings: { unoLastCard: true }, hands, top: card('red', '3') });
+  assert.equal(g.view('a').canUno, false);
+  assert.throws(() => g.callUno('a'), e => e.code === 'unoTooMany');
+  g.play('a', r5.id);
+  assert.ok(g.view('a').canUno);
+  assert.ok(g.vulnerable.has('a'));
+  assert.equal(g.callUno('a'), true);
+  assert.equal(g.vulnerable.has('a'), false);
+  assert.equal(g.view('c').canUno, true);
+  assert.equal(sanitizeSettings({}).unoLastCard, false);
+});
+
+// ---------- last standing ----------
+
+test('last standing: going out does not end the round', () => {
+  const g = rig({ settings: { lastStanding: true }, hands: { a: [card('red', '5')], b: [card('red', '6'), card('blue', '1')], c: [card('red', '7'), card('blue', '2')] }, top: card('red', '3') });
+  g.play('a', g.hands.a[0].id);
+  assert.equal(g.phase, 'play');
+  assert.deepEqual(g.finished, ['a']);
+  assert.equal(g.scores.a, 100, '2 opponents still in → 2 × 50');
+  assert.equal(g.current, 'b');
+  g.play('b', g.hands.b[0].id);
+  assert.equal(g.current, 'c');
+  g.play('c', g.hands.c[0].id);
+  assert.equal(g.current, 'b', 'the finished player is skipped');
+  assert.equal(g.view('x').players.find(p => p.id === 'a').place, 1);
+});
+
+test('last standing: the round ends when one player still has cards, who scores 0', () => {
+  const g = rig({ settings: { lastStanding: true }, hands: { a: [card('red', '5')], b: [card('red', '6')], c: [card('red', '7'), card('blue', '2')] }, top: card('red', '3') });
+  g.play('a', g.hands.a[0].id);
+  g.play('b', g.hands.b[0].id);
+  assert.equal(g.phase, 'gameOver');
+  assert.deepEqual(g.scores, { a: 100, b: 50, c: 0 });
+  assert.equal(g.roundResult.winner, 'a');
+  assert.equal(g.roundResult.loser, 'c');
+  assert.deepEqual(g.roundResult.ranking, ['a', 'b', 'c']);
+  assert.deepEqual(g.roundResult.awarded, { a: 100, b: 50 });
+});
+
+test('last standing: draw cards and skips step over finished players', () => {
+  const d2 = card('red', 'draw2');
+  const hands = { a: [], b: [d2, card('blue', '9')], c: [card('red', '9'), card('blue', '3')], d: [card('red', '8'), card('blue', '4')] };
+  const g = rig({ players: ['a', 'b', 'c', 'd'], settings: { lastStanding: true }, hands, top: card('blue', '3'), turn: 3 });
+  g.finished = ['a'];
+  g.play('d', hands.d[1].id);
+  assert.equal(g.current, 'b', 'a is out, so d passes the turn to b');
+  g.color = 'red';
+  g.play('b', d2.id);
+  assert.equal(g.hands.c.length, 4);
+  assert.equal(g.current, 'd');
+
+  const skip = card('red', 'skip');
+  const h = rig({ players: ['a', 'b', 'c', 'd'], settings: { lastStanding: true }, hands: { a: [], b: [card('red', '1')], c: [skip, card('red', '2')], d: [card('red', '3')] }, top: card('red', '3'), turn: 2 });
+  h.finished = ['a'];
+  h.play('c', skip.id);
+  assert.equal(h.current, 'b', 'c skips d, steps over a, lands on b');
+});
+
+test('last standing: 7-0 never hands cards to a finished player', () => {
+  const zero = card('red', '0');
+  const g = rig({ players: ['a', 'b', 'c', 'd'], settings: { lastStanding: true, sevenZero: true }, hands: { a: [], b: [zero, card('red', '1')], c: [card('red', '9'), card('blue', '3')], d: [card('red', '8')] }, top: card('red', '3'), turn: 1 });
+  g.finished = ['a'];
+  g.play('b', zero.id);
+  assert.equal(g.hands.a.length, 0);
+  assert.equal(g.hands.b.length + g.hands.c.length + g.hands.d.length, 4);
+
+  const seven = card('red', '7');
+  const h = rig({ settings: { lastStanding: true, sevenZero: true }, hands: { a: [], b: [seven, card('red', '1')], c: [card('red', '9')] }, top: card('red', '3'), turn: 1 });
+  h.finished = ['a'];
+  assert.throws(() => h.play('b', seven.id, { target: 'a' }), e => e.code === 'pickTarget');
+});
+
+test('last standing: someone leaving can end the round', () => {
+  const g = rig({ settings: { lastStanding: true }, hands: { a: [card('red', '5')], b: [card('red', '6'), card('blue', '1')], c: [card('red', '7'), card('blue', '2')] }, top: card('red', '3') });
+  g.play('a', g.hands.a[0].id);
+  g.removePlayer('b');
+  assert.equal(g.phase, 'gameOver');
+  assert.equal(g.roundResult.loser, 'c');
+});
+
+test('drawing from an empty deck logs no zero-card draw', () => {
+  const g = rig({ players: ['a', 'b'], hands: { a: [card('blue', '5')], b: [card('blue', '6')] }, top: card('red', '3') });
+  g.drawPile = [];
+  const before = g.seq;
+  g.draw('a');
+  const fresh = g.events.filter(e => e.seq > before);
+  assert.ok(!fresh.some(e => e.type === 'draw'));
+  assert.equal(g.current, 'b');
+});
+
+test('players leaving between rounds until one is left ends the game', () => {
+  const g = rig({ settings: { targetScore: 500 }, hands: { a: [card('red', '5')], b: [card('blue', '1')], c: [card('blue', '2')] }, top: card('red', '3') });
+  g.play('a', g.hands.a[0].id);
+  assert.equal(g.phase, 'roundOver');
+  g.removePlayer('b');
+  assert.equal(g.phase, 'roundOver');
+  g.removePlayer('c');
+  assert.equal(g.phase, 'gameOver');
+  assert.throws(() => g.nextRound(), e => e.code === 'roundNotOver');
 });

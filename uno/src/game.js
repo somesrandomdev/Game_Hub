@@ -13,7 +13,10 @@ const DEFAULT_SETTINGS = Object.freeze({
   forcePlay: false,        // a playable drawn card must be played
   sevenZero: false,        // 7 swaps hands with a chosen player, 0 rotates every hand
   jumpIn: false,           // an identical card may be played out of turn
+  multiPlay: true,         // cards of the same number/symbol may be played together, any colors
+  lastStanding: true,      // the round goes on until only one player still holds cards
   challenge: true,         // a Wild Draw Four may be challenged
+  unoLastCard: false,      // UNO can only be called once you're actually down to one card
   unoPenalty: 2,
   turnTimer: 0,            // seconds, 0 = off
 });
@@ -24,6 +27,8 @@ const LIMITS = {
   unoPenalty: [1, 6],
   turnTimer: [0, 300],
 };
+
+const RANK_POINTS = 50;    // last-standing: per opponent still holding cards when you go out
 
 const { GameError } = require('./messages');
 
@@ -93,9 +98,29 @@ class UnoGame {
   get current() { return this.players[this.turn]; }
   get top() { return this.discard[this.discard.length - 1]; }
 
+  isOut(pid) { return this.finished.includes(pid); }
+  get active() { return this.players.filter(id => !this.isOut(id)); }
+
+  // Players who already went out (last-standing) are stepped over.
   nextIndex(steps = 1) {
     const n = this.players.length;
-    return (((this.turn + this.direction * steps) % n) + n) % n;
+    const dir = this.direction * Math.sign(steps);
+    let i = this.turn;
+    for (let s = 0; s < Math.abs(steps); s++) {
+      let guard = n;
+      do { i = (((i + dir) % n) + n) % n; } while (this.isOut(this.players[i]) && --guard > 0);
+    }
+    return i;
+  }
+
+  // Could this hand get down to one card in a single play?
+  nearUno(hand) {
+    if (this.settings.unoLastCard) return hand.length === 1;
+    if (hand.length <= 2) return true;
+    if (!this.settings.multiPlay) return false;
+    const groups = {};
+    for (const c of hand) groups[c.value] = (groups[c.value] || 0) + 1;
+    return Math.max(...Object.values(groups)) >= hand.length - 1;
   }
 
   emit(type, data = {}) {
@@ -186,6 +211,8 @@ class UnoGame {
     this.drawn = null;
     this.unoSafe = new Set();
     this.vulnerable = new Map(); // pid -> seq when they became catchable
+    this.finished = [];          // last-standing: players who went out, in order
+    this.awarded = {};
     this.phase = 'play';
     this.roundResult = null;
     this.touchTurn();
@@ -205,23 +232,42 @@ class UnoGame {
     }
   }
 
+  // Last-standing: the player (already in this.finished) sits out the rest of the round.
+  finish(pid) {
+    const points = RANK_POINTS * this.active.length;
+    this.awarded[pid] = points;
+    this.scores[pid] += points;
+    this.unoSafe.delete(pid);
+    this.vulnerable.delete(pid);
+    this.emit('finished', { player: pid, place: this.finished.length, points });
+    if (this.active.length <= 1) this.endRound(this.finished[0]);
+  }
+
   endRound(winner) {
-    let points = 0;
     const hands = {};
-    for (const id of this.players) {
-      hands[id] = this.hands[id].slice();
-      if (id !== winner) points += this.hands[id].reduce((sum, c) => sum + cardPoints(c), 0);
+    for (const id of this.players) hands[id] = this.hands[id].slice();
+    let loser = null;
+    if (this.settings.lastStanding) {
+      loser = this.active[0] ?? null;
+    } else {
+      let points = 0;
+      for (const id of this.players) {
+        if (id !== winner) points += this.hands[id].reduce((sum, c) => sum + cardPoints(c), 0);
+      }
+      this.scores[winner] += points;
+      this.awarded = { [winner]: points };
     }
-    this.scores[winner] += points;
+    const points = this.awarded[winner] ?? 0;
     const target = this.settings.targetScore;
-    const gameOver = target === 0 || this.scores[winner] >= target;
+    const gameOver = target === 0 || Math.max(...Object.values(this.scores)) >= target;
     this.phase = gameOver ? 'gameOver' : 'roundOver';
     this.pending = { count: 0, type: null };
     this.challenge = null;
     this.drawn = null;
     this.vulnerable.clear();
-    this.roundResult = { winner, points, hands, scores: { ...this.scores }, gameOver };
-    this.emit('roundOver', { winner, points, gameOver });
+    const ranking = loser ? [...this.finished, loser] : null;
+    this.roundResult = { winner, loser, points, awarded: { ...this.awarded }, ranking, hands, scores: { ...this.scores }, gameOver };
+    this.emit('roundOver', { winner, loser, points, gameOver });
   }
 
   nextRound() {
@@ -246,6 +292,8 @@ class UnoGame {
     this.drawPile.unshift(...(this.hands[pid] || []));
     delete this.hands[pid];
     delete this.scores[pid];
+    delete this.awarded[pid];
+    this.finished = this.finished.filter(id => id !== pid);
     this.players.splice(idx, 1);
     this.unoSafe.delete(pid);
     this.vulnerable.delete(pid);
@@ -255,7 +303,8 @@ class UnoGame {
     this.emit('leave', { player: pid });
 
     if (n < 2) {
-      if (this.phase === 'play') {
+      // between rounds too: with one player left there is no next round to deal
+      if (this.phase !== 'gameOver') {
         this.phase = 'gameOver';
         this.roundResult = null;
         this.emit('abandoned');
@@ -275,6 +324,10 @@ class UnoGame {
       this.touchTurn();
     }
     if (this.turn >= n) this.turn = 0;
+    if (this.phase !== 'play') return;
+    if (this.isOut(this.current)) this.turn = this.nextIndex(1);
+    // (with 2+ players left, someone has already gone out)
+    if (this.active.length < 2) this.endRound(this.finished[0]);
   }
 
   // ---------- rules ----------
@@ -298,13 +351,16 @@ class UnoGame {
     return card.color === top.color && card.value === top.value;
   }
 
-  play(pid, cardId, opts = {}) {
+  // cardIds: one id, or several cards of the same number/symbol (multiPlay). The first
+  // one must be playable; the last one ends up on top and sets the color.
+  play(pid, cardIds, opts = {}) {
     this.assertPlaying();
     const hand = this.hands[pid];
     if (!hand) throw new GameError('notInGame');
-    const idx = hand.findIndex(c => c.id === cardId);
-    if (idx < 0) throw new GameError('noCard');
-    const card = hand[idx];
+    const ids = [...new Set([].concat(cardIds).map(Number))];
+    const cards = ids.map(id => hand.find(c => c.id === id));
+    if (!cards.length || cards.some(c => !c)) throw new GameError('noCard');
+    const card = cards[0];
     const jumpIn = pid !== this.current;
     if (!this.canPlay(pid, card)) {
       if (jumpIn) throw new GameError('notYourTurn');
@@ -312,19 +368,25 @@ class UnoGame {
       if (this.pending.count > 0) throw new GameError('stackOrTake', { count: this.pending.count });
       throw new GameError('noMatch');
     }
+    if (cards.length > 1) {
+      if (!this.settings.multiPlay) throw new GameError('oneCardOnly');
+      if (cards.some(c => c.value !== card.value)) throw new GameError('sameValueOnly');
+    }
 
-    let chosen = card.color;
-    if (card.color === 'wild') {
+    const last = cards[cards.length - 1];
+    let chosen = last.color;
+    if (last.color === 'wild') {
       if (!COLORS.includes(opts.color)) throw new GameError('pickColor');
       chosen = opts.color;
     }
-    const swap = this.settings.sevenZero && card.value === '7' && hand.length > 1;
-    if (swap && (opts.target === pid || !this.hands[opts.target])) {
+    const swap = this.settings.sevenZero && card.value === '7' && hand.length > cards.length;
+    if (swap && (opts.target === pid || !this.hands[opts.target] || this.isOut(opts.target))) {
       throw new GameError('pickTarget');
     }
 
     const prevColor = this.color;
-    const guilty = card.value === 'wild4' && hand.some(c => c.id !== card.id && c.color === prevColor);
+    const guilty = card.value === 'wild4' && hand.some(c => !ids.includes(c.id) && c.color === prevColor);
+    const duel = this.active.length === 2;
 
     this.vulnerable.clear();
     if (jumpIn) {
@@ -333,34 +395,36 @@ class UnoGame {
     }
     this.drawn = null;
     this.challenge = null;
-    hand.splice(idx, 1);
-    this.discard.push(card);
+    for (const c of cards) {
+      hand.splice(hand.indexOf(c), 1);
+      this.discard.push(c);
+      this.emit('play', { player: pid, card: c, color: c.color === 'wild' ? chosen : c.color });
+    }
     this.color = chosen;
-    this.emit('play', { player: pid, card, color: chosen });
 
     if (hand.length === 1 && !this.unoSafe.has(pid)) this.vulnerable.set(pid, this.seq);
     const out = hand.length === 0;
+    const leaving = out && this.settings.lastStanding;
+    if (leaving) this.finished.push(pid);
+    const n = cards.length;
 
     switch (card.value) {
       case 'skip':
-        this.emit('skip', { player: this.players[this.nextIndex(1)] });
-        this.advance(2);
+        this.skipNext(n);
         break;
       case 'reverse':
-        if (this.players.length === 2) {
-          this.emit('skip', { player: this.players[this.nextIndex(1)] });
-          this.advance(2);
-        } else {
-          this.direction *= -1;
+        if (duel) this.skipNext(n);
+        else {
+          if (n % 2) this.direction *= -1;
           this.emit('reverse', { direction: this.direction });
           this.advance(1);
         }
         break;
       case 'draw2':
-        this.applyDraw(2, 'draw2', { out });
+        this.applyDraw(2 * n, 'draw2', { out });
         break;
       case 'wild4':
-        this.applyDraw(4, 'wild4', { out, offender: pid, guilty });
+        this.applyDraw(4 * n, 'wild4', { out, offender: pid, guilty });
         break;
       case '7':
         if (swap) this.swapHands(pid, opts.target);
@@ -374,7 +438,13 @@ class UnoGame {
         this.advance(1);
     }
 
-    if (out) this.endRound(pid);
+    if (leaving) this.finish(pid);
+    else if (out) this.endRound(pid);
+  }
+
+  skipNext(count) {
+    for (let i = 1; i <= count; i++) this.emit('skip', { player: this.players[this.nextIndex(i)] });
+    this.advance(count + 1);
   }
 
   applyDraw(count, type, { out, offender, guilty }) {
@@ -411,12 +481,13 @@ class UnoGame {
   }
 
   rotateHands() {
-    const n = this.players.length;
-    const old = this.players.map(id => this.hands[id]);
-    this.players.forEach((id, i) => {
+    const ids = this.active;
+    const n = ids.length;
+    const old = ids.map(id => this.hands[id]);
+    ids.forEach((id, i) => {
       this.hands[id] = old[(((i - this.direction) % n) + n) % n];
     });
-    for (const id of this.players) this.settleUno(id);
+    for (const id of ids) this.settleUno(id);
     this.emit('rotate', { direction: this.direction });
   }
 
@@ -444,8 +515,10 @@ class UnoGame {
       hand.push(last);
       drew++;
     } while (this.settings.drawUntilPlayable && !this.matches(last));
-    this.unoSafe.delete(pid);
-    this.emit('draw', { player: pid, count: drew, reason: 'draw' });
+    if (drew) {
+      this.unoSafe.delete(pid);
+      this.emit('draw', { player: pid, count: drew, reason: 'draw' });
+    }
 
     if (last && this.matches(last)) {
       this.drawn = last.id;
@@ -469,15 +542,16 @@ class UnoGame {
     this.assertTurn(pid);
     if (!this.challenge) throw new GameError('nothingToChallenge');
     const { offender, guilty } = this.challenge;
+    const { count } = this.pending;
     this.challenge = null;
     this.pending = { count: 0, type: null };
     this.vulnerable.clear();
     this.emit('challenge', { player: pid, target: offender, success: guilty });
     if (guilty) {
-      this.give(offender, 4, 'challenge');
+      this.give(offender, count, 'challenge');
       this.touchTurn(); // challenger now plays normally
     } else {
-      this.give(pid, 6, 'challenge');
+      this.give(pid, count + 2, 'challenge');
       this.emit('skip', { player: pid });
       this.advance(1);
     }
@@ -487,7 +561,7 @@ class UnoGame {
     this.assertPlaying();
     const hand = this.hands[pid];
     if (!hand) throw new GameError('notInGame');
-    if (hand.length > 2) throw new GameError('unoTooMany');
+    if (!this.nearUno(hand)) throw new GameError('unoTooMany');
     if (this.unoSafe.has(pid) && !this.vulnerable.has(pid)) return false;
     this.unoSafe.add(pid);
     this.vulnerable.delete(pid);
@@ -521,10 +595,13 @@ class UnoGame {
         score: this.scores[id] ?? 0,
         uno: this.unoSafe.has(id) && (this.hands[id]?.length ?? 0) === 1,
         vulnerable: this.vulnerable.has(id),
+        place: this.finished.indexOf(id) + 1,
+        roundPoints: this.awarded[id] ?? 0,
       })),
       hand,
       playable: hand ? hand.filter(c => this.canPlay(pid, c)).map(c => c.id) : [],
       safe: this.unoSafe.has(pid),
+      canUno: Boolean(hand && hand.length && this.phase === 'play' && this.nearUno(hand)),
       top: this.top,
       recent: this.discard.slice(-4),
       color: this.color,

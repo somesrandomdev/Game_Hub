@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0a1a12">
+  <meta name="theme-color" content="#f4ecdc">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>UNO Night</title>
@@ -11,8 +11,6 @@
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body data-color="none" data-screen="home">
-  <div id="glow" aria-hidden="true"></div>
-
   <!-- ============ HOME ============ -->
   <section id="screen-home" class="screen">
     <button class="btn ghost sm lang-btn home-lang" data-action="lang" data-i18n-title="title.language"></button>
@@ -69,6 +67,10 @@
       </div>
       <div class="panel">
         <h2 data-i18n="lobby.invite"></h2>
+        <div id="lobby-qr" class="qr hidden">
+          <div class="qr-img"></div>
+          <p class="muted small" data-i18n="lobby.scan"></p>
+        </div>
         <p class="muted small" data-i18n="lobby.inviteHint"></p>
         <div id="lobby-addresses" class="addresses"></div>
         <p class="muted small"><span data-i18n="lobby.orCode"></span> <b id="lobby-code-2"></b>.</p>
@@ -83,45 +85,51 @@
   <!-- ============ GAME ============ -->
   <section id="screen-game" class="screen hidden">
     <header class="topbar">
-      <button class="btn ghost icon" data-action="menu" data-i18n-title="title.menu">☰</button>
+      <button class="btn icon" data-action="menu" data-i18n-title="title.menu">☰</button>
       <div class="tb-mid">
         <span class="tb-code"><span data-i18n="game.room"></span> <b id="g-code"></b></span>
         <span id="g-round" class="tb-round"></span>
       </div>
       <div class="tb-right">
-        <button class="btn ghost sm lang-btn" data-action="lang" data-i18n-title="title.language"></button>
-        <button class="btn ghost icon" data-action="scores" data-i18n-title="title.scores">🏆</button>
-        <button class="btn ghost icon" data-action="rules" data-i18n-title="title.rules">?</button>
-        <button class="btn ghost icon mute-btn" data-action="mute" data-i18n-title="title.sound"></button>
-        <button class="btn ghost icon chat-btn" data-action="chat" data-i18n-title="title.chat">💬<span class="badge hidden"></span></button>
+        <button class="btn icon" data-action="scores" data-i18n-title="title.scores">🏆</button>
+        <button class="btn icon chat-btn" data-action="chat" data-i18n-title="title.chat">💬<span class="badge hidden"></span></button>
       </div>
     </header>
+    <nav id="turn-strip" class="turn-strip" data-i18n-aria="strip.title"></nav>
 
-    <div id="opponents" class="opponents"></div>
-
-    <div class="table">
+    <div id="table" class="table">
+      <div class="felt" aria-hidden="true"></div>
+      <div id="opponents" class="opponents"></div>
       <div class="table-center">
         <div id="direction" class="direction" aria-hidden="true">
           <svg viewBox="0 0 200 200"><defs><marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs>
-            <path d="M100 18 A82 82 0 0 1 182 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
-            <path d="M100 182 A82 82 0 0 1 18 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+            <circle cx="100" cy="100" r="94" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-dasharray="0.1 9" opacity=".8"/>
+            <g id="dir-arrows">
+              <path d="M100 18 A82 82 0 0 1 182 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+              <path d="M100 182 A82 82 0 0 1 18 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+            </g>
           </svg>
         </div>
         <button id="draw-pile" class="pile draw" data-i18n-aria="pile.draw"></button>
         <div id="discard-pile" class="pile discard" data-i18n-aria="pile.discard"></div>
       </div>
+      <div id="table-info" class="table-info"></div>
       <div id="status" class="status"></div>
-      <div id="timer" class="timer hidden"><i></i></div>
+      <aside id="leaderboard" class="leaderboard hidden" aria-live="polite"></aside>
+      <button id="btn-uno" class="uno-fab hidden"></button>
     </div>
 
     <div class="me-bar">
+      <div class="me-left">
+        <button id="btn-sort" class="btn ghost sm" data-i18n-title="btn.sortTitle"></button>
+      </div>
       <div id="me-info" class="me-info"></div>
       <div class="actions">
-        <button id="btn-uno" class="btn uno hidden"></button>
+        <button id="btn-multi-cancel" class="btn ghost sm hidden" data-i18n-title="modal.cancel">✕</button>
+        <button id="btn-multi" class="btn primary hidden"></button>
         <button id="btn-challenge" class="btn warn hidden" data-i18n="btn.challenge"></button>
         <button id="btn-draw" class="btn hidden"></button>
         <button id="btn-pass" class="btn hidden" data-i18n="btn.pass"></button>
-        <button id="btn-sort" class="btn ghost sm" data-i18n-title="btn.sortTitle"></button>
       </div>
     </div>
     <div id="hand-wrap" class="hand-wrap"><div id="hand" class="hand"></div></div>
@@ -177,6 +185,9 @@
       <h2 data-i18n="menu.title"></h2>
       <div class="menu-list">
         <button class="btn" data-action="lang"><span class="lang-btn"></span></button>
+        <button class="btn" data-action="rules" data-i18n="menu.rules"></button>
+        <button class="btn mute-btn" data-action="mute"></button>
+        <button class="btn" data-action="fx" id="btn-fx"></button>
         <button class="btn" data-action="fullscreen" data-i18n="menu.fullscreen"></button>
         <button class="btn" data-action="end-game" id="btn-end-game" data-i18n="menu.end"></button>
         <button class="btn danger" data-action="leave" data-i18n="menu.leave"></button>
@@ -195,7 +206,6 @@
 
   <div id="conn-banner" class="conn-banner hidden" data-i18n="conn.reconnecting"></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
-  <canvas id="confetti" aria-hidden="true"></canvas>
 
   <script type="module" src="js/app.js"></script>
 </body>

@@ -1,7 +1,9 @@
 import { createCard, createBack, cardName, sortHand, tiltFor, COLOR_HEX } from './cards.js';
 import { sfx, isMuted, setMuted } from './sound.js';
-import { fly, toast, bubble, confetti, vibrate } from './fx.js';
+import { toast, bubble, vibrate } from './fx.js';
+import * as vfx from './vfx.js';
 import { t, has, getLang, setLang, applyStatic, onLangChange } from './i18n.js';
+import { qrSvg } from './qr.js';
 
 // ================================================================
 // helpers
@@ -31,6 +33,9 @@ const SETTINGS_UI = [
   { key: 'targetScore', hint: true, type: 'select', options: [[0, () => t('opt.oneRound')], ...[100, 250, 500, 1000].map(n => [n, () => t('opt.points', { n })])] },
   { key: 'turnTimer', hint: true, type: 'select', options: [[0, () => t('opt.off')], ...[15, 30, 60].map(n => [n, () => t('opt.seconds', { n })])] },
   { key: 'unoPenalty', type: 'select', options: [cardsOpt(2), cardsOpt(4)] },
+  { key: 'unoLastCard', hint: true, type: 'bool' },
+  { key: 'multiPlay', hint: true, type: 'bool' },
+  { key: 'lastStanding', hint: true, type: 'bool' },
   { key: 'stacking', hint: true, type: 'bool' },
   { key: 'challenge', hint: true, type: 'bool' },
   { key: 'drawUntilPlayable', hint: true, type: 'bool' },
@@ -65,6 +70,9 @@ const app = {
   lastRooms: [],
   skew: 0,
   lobbySig: '',
+  sel: null,           // multi-card selection: { value, ids }
+  drop: null,          // cards dropped on the pile, waiting for the server: { ghost, rects }
+  justDragged: false,
   chatMsgs: [],   // kept so chat can be re-rendered when the language changes
   logEvents: [],  // same for the game log
 };
@@ -148,13 +156,33 @@ function enterRoom(session) {
   connect();
 }
 
+// Live updates come over an event stream. Some proxies (e.g. the Cloudflare tunnel used
+// for online play) hold streams back until they close, so if the stream stays silent
+// (the server always sends the chat history first) we switch to long polling.
+const STREAM_WATCHDOG_MS = 4000;
+let usePolling = false;
+
+function disconnect() {
+  clearTimeout(app.streamWatchdog);
+  if (app.es) { app.es.close(); app.es = null; }
+  app.pollGen = (app.pollGen || 0) + 1; // ends any running poll loop
+}
+
 function connect() {
-  if (app.es) app.es.close();
+  disconnect();
+  if (usePolling) { pollLoop(app.pollGen); return; }
   const { code, token } = app.session;
   const es = new EventSource(`/api/stream?code=${encodeURIComponent(code)}&token=${encodeURIComponent(token)}`);
   app.es = es;
+  let heard = false;
+  app.streamWatchdog = setTimeout(() => {
+    if (heard || app.es !== es) return;
+    usePolling = true;
+    connect();
+  }, STREAM_WATCHDOG_MS);
   es.onopen = () => setConn(true);
   es.onmessage = ev => {
+    heard = true;
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
     onMessage(msg);
@@ -166,6 +194,30 @@ function connect() {
       recheck();
     }
   };
+}
+
+async function pollLoop(gen) {
+  let cid = '';
+  while (app.pollGen === gen && app.session) {
+    const { code, token } = app.session;
+    try {
+      const res = await fetch(`/api/poll?code=${encodeURIComponent(code)}&token=${encodeURIComponent(token)}&cid=${cid}`, { cache: 'no-store' });
+      if (app.pollGen !== gen) return;
+      if (res.status === 404) { recheck(); return; }
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      cid = data.cid;
+      setConn(true);
+      for (const msg of data.messages) {
+        if (app.pollGen !== gen) return;
+        onMessage(msg);
+      }
+    } catch {
+      if (app.pollGen !== gen) return;
+      setConn(false);
+      await new Promise(r => setTimeout(r, 1500));
+    }
+  }
 }
 
 let recheckTimer = 0;
@@ -191,7 +243,7 @@ function setConn(ok) {
 
 function leaveToHome(message) {
   clearTimeout(recheckTimer);
-  if (app.es) { app.es.close(); app.es = null; }
+  disconnect();
   clearSession();
   app.state = null;
   app.resultsKey = null;
@@ -225,7 +277,7 @@ function onMessage(msg) {
       break;
     case 'react': showReaction(msg.from, msg.emoji); break;
     case 'kicked':
-      if (app.es) app.es.close();
+      disconnect();
       leaveToHome(has(`kick.${msg.reason}`) ? t(`kick.${msg.reason}`) : msg.reason);
       break;
     default: break;
@@ -236,9 +288,18 @@ function onMessage(msg) {
 // screens
 // ================================================================
 
+// Phones dim and lock mid-game otherwise, which drops the connection.
+// (Browsers only offer this on https or localhost, e.g. the online link.)
+let wakeLock = null; // Promise of the lock, or of null if refused
+function keepAwake(on) {
+  if (!on || document.hidden) { wakeLock?.then(l => l?.release()); wakeLock = null; return; }
+  if (!wakeLock && navigator.wakeLock) wakeLock = navigator.wakeLock.request('screen').catch(() => null);
+}
+
 function showScreen(name) {
   for (const s of ['home', 'lobby', 'game']) $(`#screen-${s}`).classList.toggle('hidden', s !== name);
   document.body.dataset.screen = name;
+  keepAwake(name === 'game');
   if (name === 'home') startRoomPolling(); else stopRoomPolling();
 }
 
@@ -267,23 +328,40 @@ async function loadInfo() {
   } catch { app.info = null; }
   renderAddresses($('#home-addresses'));
   if (app.state) renderAddresses($('#lobby-addresses'), app.state.code);
+  // the online link takes a few seconds to open (and changes if it reconnects)
+  if (app.info?.online) setTimeout(loadInfo, app.info.publicUrl ? 30000 : 3000);
 }
 
 function renderAddresses(box, code) {
   if (!box) return;
   const suffix = code ? `/?room=${code}` : '/';
   const port = app.info?.port || location.port || 80;
-  const list = (app.info?.addresses || []).map(a => ({ url: `http://${a.address}:${port}${suffix}`, iface: a.iface, weak: a.address.startsWith('169.254.') }));
+  const pub = app.info?.publicUrl;
+  // someone who came in through the online link can't use the host's LAN addresses
+  const viaPublic = pub && location.origin === new URL(pub).origin;
+  const lan = viaPublic ? [] : (app.info?.addresses || []).map(a => ({ url: `http://${a.address}:${port}${suffix}`, iface: a.iface, weak: a.address.startsWith('169.254.') }));
+  const list = pub ? [{ url: pub + suffix, iface: t('addr.online'), online: true }, ...lan] : lan;
+  if (code) renderQr(list.find(a => !a.weak)?.url);
+  const pending = app.info?.online && !pub ? `<div class="addr pending"><small>${esc(t('addr.onlineWait'))}</small></div>` : '';
   if (!list.length) {
-    box.innerHTML = `<div class="addr"><a href="${esc(location.origin + suffix)}">${esc(location.origin + suffix)}</a></div>
+    box.innerHTML = `${pending}<div class="addr"><a href="${esc(location.origin + suffix)}">${esc(location.origin + suffix)}</a></div>
       <p class="muted small">${esc(t('addr.none'))}</p>`;
     return;
   }
-  box.innerHTML = list.map(a => `
-    <div class="addr${a.weak ? ' weak' : ''}">
-      <div><a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.url.replace('http://', ''))}</a><br><small>${esc(a.iface)}${a.weak ? ` · ${esc(t('addr.weak'))}` : ''}</small></div>
+  box.innerHTML = pending + list.map(a => `
+    <div class="addr${a.weak ? ' weak' : ''}${a.online ? ' online' : ''}">
+      <div><a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.url.replace(/^https?:\/\//, ''))}</a><br><small>${esc(a.iface)}${a.weak ? ` · ${esc(t('addr.weak'))}` : ''}</small></div>
       <button class="btn ghost sm" data-copy="${esc(a.url)}">${esc(t('btn.copy'))}</button>
     </div>`).join('');
+}
+
+// Phones scan this to land on the join screen with the room code filled in.
+function renderQr(url) {
+  const box = $('#lobby-qr');
+  box.classList.toggle('hidden', !url);
+  if (!url || box.dataset.url === url) return;
+  box.dataset.url = url;
+  box.querySelector('.qr-img').innerHTML = qrSvg(url);
 }
 
 async function copyText(text) {
@@ -468,6 +546,20 @@ function seatOrder(g) {
   return [...g.players.slice(idx + 1), ...g.players.slice(0, idx)];
 }
 
+// Who plays when: the current player first, then everyone still holding cards in the
+// direction of play.
+function turnOrder(g) {
+  const n = g.players.length;
+  const start = g.players.findIndex(p => p.id === g.current);
+  if (start < 0) return [];
+  const order = [];
+  for (let k = 0; k < n; k++) {
+    const p = g.players[(((start + k * g.direction) % n) + n) % n];
+    if (!p.place) order.push(p);
+  }
+  return order;
+}
+
 function seatEl(id) {
   return id === me() ? $('#me-info') : $(`#opponents .seat[data-id="${id}"]`);
 }
@@ -498,55 +590,157 @@ function renderGame(s, prev) {
     : t('game.roundSingle', { n: g.round });
 
   renderOpponents(s, g);
+  renderTurnStrip(g);
   renderPiles(g, myTurn);
+  renderTableInfo(g);
   renderMe(s, g, myP, myTurn);
   const newCards = renderHand(g, myTurn);
   renderActions(g, myP, myTurn);
   renderStatus(g, myP, myTurn);
+  renderLeaderboard(g);
   startTimer();
 
-  if (!boot && newCards.length) animateNewCards(newCards, g);
-  processEvents(g, handRects, boot);
+  // A hidden tab doesn't run animation frames: flights would pile up (keeping the
+  // played cards hidden on the pile) and all fire at once when you come back.
+  const quiet = boot || document.hidden;
+  if (!quiet && newCards.length) animateNewCards(newCards, handSource(g));
+  processEvents(g, handRects, quiet);
   maybeShowResults(g, boot);
 
   if (myTurn && !app.prevMyTurn && !boot) {
     sfx.turn();
     vibrate(40);
+    const wrap = $('#hand-wrap');
+    wrap.classList.remove('sweep');
+    void wrap.offsetWidth;
+    wrap.classList.add('sweep');
   }
   app.prevMyTurn = myTurn;
   document.title = myTurn && document.hidden ? t('title.turn') : t('title.page');
 }
 
-let seatsSig = '';
+// Opponents sit around an ellipse, you are always at the bottom (90° in screen coordinates).
+// Seat order follows turn order clockwise, so the next player sits on your left.
+function seatAngles(k) {
+  if (k === 1) return [270];
+  const gap = Math.max(360 / (k + 1), 45);
+  const step = (360 - 2 * gap) / (k - 1);
+  return Array.from({ length: k }, (_, i) => 90 + gap + i * step);
+}
+
+function avatarWrap(m, count) {
+  const badge = count == null ? '' : `<span class="count-badge" title="${esc(t('cards.count', { n: count }))}"><i></i>${count}</span>`;
+  return `<div class="avatar-wrap"><span class="ring"></span>${avatarHtml(m)}${badge}</div>`;
+}
+
+// Seats are kept and patched in place (class, position, contents) instead of being
+// rebuilt every turn, so the DOM churn stays tiny and the turn ring keeps its state.
 function renderOpponents(s, g) {
   const box = $('#opponents');
   const amIn = g.players.some(p => p.id === s.me);
-  const html = seatOrder(g).map(p => {
+  const seats = seatOrder(g);
+  const angles = seatAngles(seats.length);
+  const live = new Set();
+  const next = g.phase === 'play' ? turnOrder(g)[1]?.id : null;
+  seats.forEach((p, i) => {
     const m = member(p.id);
     const cls = ['seat'];
     if (p.id === g.current) cls.push('turn');
+    if (p.id === next) cls.push('next');
     if (p.vulnerable) cls.push('vulnerable');
     if (m && !m.connected) cls.push('offline');
-    const backs = Math.min(p.count, 7);
-    return `<div class="${cls.join(' ')}" data-id="${p.id}">
-      ${avatarHtml(m)}
-      <div class="seat-info">
-        <span class="seat-name">${esc(m?.name ?? '?')}${p.id === g.dealer ? ' <span class="dealer-tag">(D)</span>' : ''}</span>
-        <span class="seat-meta"><span class="mini-hand">${'<i></i>'.repeat(backs)}</span><b>${p.count}</b><span class="score">${t('seat.pts', { n: p.score })}</span></span>
-      </div>
+    if (p.place) cls.push('done');
+    const a = (angles[i] * Math.PI) / 180;
+    const style = `--sx:${Math.cos(a).toFixed(3)};--sy:${Math.sin(a).toFixed(3)}`;
+    const status = p.place
+      ? `<span class="place">${t('seat.place', { n: p.place })}</span>`
+      : `<span class="score">${t('seat.score', { n: p.score })}</span>`;
+    const flag = p.id === g.current && g.phase === 'play' ? `<span class="seat-flag now">${t('seat.now')}</span>`
+      : p.id === next ? `<span class="seat-flag">${t('seat.next')}</span>` : '';
+    const inner = `${flag}${avatarWrap(m, p.place ? null : p.count)}
+      <span class="seat-text"><span class="seat-name">${esc(m?.name ?? '?')}${p.id === g.dealer ? ' <span class="dealer-tag">(D)</span>' : ''}</span>
+      <span class="seat-meta">${status}</span></span>
       ${p.uno ? '<span class="uno-tag">UNO</span>' : ''}
-      ${p.vulnerable && amIn && g.phase === 'play' ? `<button class="catch-btn" data-catch="${p.id}">${t('seat.catch')}</button>` : ''}
-    </div>`;
-  }).join('');
+      ${p.vulnerable && amIn && g.phase === 'play' ? `<button class="catch-btn" data-catch="${p.id}">${t('seat.catch')}</button>` : ''}`;
+
+    let el = box.querySelector(`:scope > .seat[data-id="${p.id}"]`);
+    if (!el) {
+      el = document.createElement('div');
+      el.dataset.id = p.id;
+      box.appendChild(el);
+      if (!vfx.motion.reduced) el.animate([{ opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1 }], { duration: 320, easing: 'cubic-bezier(.3,1.5,.5,1)' });
+    }
+    const className = cls.join(' ');
+    if (el.className !== className) el.className = className;
+    if (el.getAttribute('style') !== style) el.setAttribute('style', style);
+    if (el._html !== inner) {
+      el.innerHTML = inner;
+      el._html = inner;
+    }
+    live.add(el);
+  });
+  for (const el of box.querySelectorAll(':scope > .seat')) if (!live.has(el)) el.remove();
 
   // spectators who'll join next round
   const waiting = s.members.filter(m => m.waiting);
-  const extra = waiting.length
-    ? `<div class="seat offline"><div class="seat-info"><span class="seat-name">👀 ${waiting.map(w => esc(w.name)).join(', ')}</span><span class="seat-meta">${t('seat.joinsNext')}</span></div></div>`
-    : '';
-  if (seatsSig !== html + extra) {
-    seatsSig = html + extra;
-    box.innerHTML = seatsSig;
+  let chip = box.querySelector(':scope > .waiting-chip');
+  if (waiting.length) {
+    if (!chip) {
+      chip = document.createElement('div');
+      chip.className = 'waiting-chip';
+      box.appendChild(chip);
+    }
+    chip.textContent = `👀 ${waiting.map(w => w.name).join(', ')} · ${t('seat.joinsNext')}`;
+  } else chip?.remove();
+}
+
+// The order of play spelled out: who's on now, who's next, and when it's your turn.
+let stripSig = '';
+function renderTurnStrip(g) {
+  const box = $('#turn-strip');
+  const order = g.phase === 'play' ? turnOrder(g) : [];
+  const html = order.length ? `<span class="strip-dir" title="${esc(t(g.direction > 0 ? 'dir.cw' : 'dir.ccw'))}">${g.direction > 0 ? '↻' : '↺'}</span>${order.map((p, i) => {
+    const mine = p.id === me();
+    const cls = `chip${i === 0 ? ' now' : ''}${i === 1 ? ' next' : ''}${mine ? ' me' : ''}`;
+    const name = mine ? t('you') : member(p.id)?.name ?? '?';
+    const tag = i === 0 ? `<small>${esc(t('strip.now'))}</small>` : i === 1 ? `<small>${esc(t('strip.next'))}</small>` : '';
+    return `${i ? '<i class="arrow">→</i>' : ''}<span class="${cls}">${tag}<b>${esc(name)}</b><em>${p.count}</em></span>`;
+  }).join('')}` : '';
+  if (html === stripSig) return;
+  stripSig = html;
+  box.innerHTML = html;
+  box.classList.toggle('hidden', !html);
+  box.querySelector('.chip.now')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+// Plain-words reminder of the two things that change mid-game: the color and the direction.
+let infoSig = '';
+function renderTableInfo(g) {
+  const box = $('#table-info');
+  const html = g.phase !== 'play' ? '' : `
+    <span class="info-chip color-chip" data-c="${esc(g.color)}"><i></i>${esc(cap(colorName(g.color)))}</span>
+    <span class="info-chip">${g.direction > 0 ? '↻' : '↺'} ${esc(t(g.direction > 0 ? 'dir.cw' : 'dir.ccw'))}</span>`;
+  if (html === infoSig) return;
+  infoSig = html;
+  box.innerHTML = html;
+}
+
+// Finished players by rank (last-standing), then whoever is still holding cards.
+let boardSig = '';
+function renderLeaderboard(g) {
+  const box = $('#leaderboard');
+  const out = g.players.filter(p => p.place).sort((a, b) => a.place - b.place);
+  const show = g.phase === 'play' && out.length > 0;
+  box.classList.toggle('hidden', !show);
+  $('#table').classList.toggle('has-board', show);
+  if (!show) return;
+  const name = p => esc(member(p.id)?.name ?? '?') + (p.id === me() ? esc(t('res.youSuffix')) : '');
+  const rows = out.map(p => `<li class="${p.id === me() ? 'me' : ''}"><span class="rk">${esc(t('board.rank', { n: p.place }))}</span><span class="nm">${name(p)}</span><span class="pt">+${p.roundPoints}</span></li>`);
+  const still = g.players.filter(p => !p.place).map(p => `<li class="in${p.id === me() ? ' me' : ''}"><span class="rk">•</span><span class="nm">${name(p)}</span><span class="pt">${esc(t('cards.count', { n: p.count }))}</span></li>`);
+  const html = `<h4>${esc(t('board.title'))}</h4><ol>${rows.join('')}${still.join('')}</ol>`;
+  if (html !== boardSig) {
+    boardSig = html;
+    box.innerHTML = html;
   }
 }
 
@@ -584,21 +778,28 @@ function renderPiles(g, myTurn) {
     discard.dataset.wild = g.top.color === 'wild' ? g.color : '';
   }
 
-  const dir = $('#direction');
-  dir.classList.toggle('ccw', g.direction === -1);
-  dir.classList.toggle('hidden', g.phase !== 'play');
+  $('#direction').classList.toggle('hidden', g.phase !== 'play');
+  setRing(g.direction, g.pending.count > 0);
 }
 
 function renderMe(s, g, myP, myTurn) {
   const box = $('#me-info');
   const m = member(s.me);
+  let cls = 'me-info';
+  let html;
   if (!myP) {
-    box.innerHTML = `${avatarHtml(m)}<div class="seat-info"><span class="seat-name">${esc(m?.name)}</span><span class="seat-meta">${t('me.spectating')}</span></div>`;
-    box.className = 'me-info';
-    return;
+    html = `${avatarWrap(m)}<div class="seat-info"><span class="seat-name">${esc(m?.name)}</span><span class="seat-meta">${t('me.spectating')}</span></div>`;
+  } else {
+    cls += `${myTurn ? ' turn' : ''}${myP.vulnerable ? ' vulnerable' : ''}${myP.place ? ' done' : ''}`;
+    const meta = myP.place ? t('me.out', { place: myP.place, pts: myP.score }) : t('me.meta', { n: myP.count, pts: myP.score });
+    html = `${avatarWrap(m)}<div class="seat-info"><span class="seat-name">${esc(m?.name)} ${t('me.you')}</span><span class="seat-meta">${meta}</span></div>`;
   }
-  box.className = `me-info${myTurn ? ' turn' : ''}${myP.vulnerable ? ' vulnerable' : ''}`;
-  box.innerHTML = `${avatarHtml(m)}<div class="seat-info"><span class="seat-name">${esc(m?.name)} ${t('me.you')}</span><span class="seat-meta">${t('me.meta', { n: myP.count, pts: myP.score })}</span></div>`;
+  // patched only when it changes: rebuilding restarts the turn glow and timer ring
+  if (box.className !== cls) box.className = cls;
+  if (box._html !== html) {
+    box.innerHTML = html;
+    box._html = html;
+  }
 }
 
 function renderHand(g, myTurn) {
@@ -621,36 +822,72 @@ function renderHand(g, myTurn) {
     el.classList.toggle('jump', !myTurn && playable.has(c.id));
     el.classList.toggle('drawn', g.drawn === c.id);
     el.classList.remove('hide-for-fly');
+    if (!app.drop && !drag.active) el.classList.remove('drag-src');
     ordered.push(el);
   }
   for (const el of existing.values()) el.remove();
   ordered.forEach((el, i) => { if (hand.children[i] !== el) hand.insertBefore(el, hand.children[i] || null); });
+  const sel = app.sel;
+  if (sel && (!g.playable.includes(sel.ids[0]) || sel.ids.some(id => !g.hand.some(c => c.id === id)))) app.sel = null;
+  renderSel();
   layoutHand();
   return fresh;
 }
 
+// Cards shrink a little when the hand gets big, overlap to fit, and sit on a gentle arc.
 function layoutHand() {
   const hand = $('#hand');
   const wrap = $('#hand-wrap');
   const n = hand.children.length;
   if (!n) return;
+  hand.style.setProperty('--hs', n > 9 ? Math.max(0.72, 9 / n).toFixed(3) : '1');
   const cw = hand.children[0].offsetWidth || 80;
-  const avail = wrap.clientWidth - 24;
+  // leave room for the outer cards, which lean out of the row on the arc
+  const avail = wrap.clientWidth - 24 - cw * 0.4;
   let gap = 6;
   if (n > 1) gap = Math.min(6, (avail - cw * n) / (n - 1));
   gap = Math.max(gap, -cw * 0.7);
   hand.style.setProperty('--gap', `${gap}px`);
+  const mid = (n - 1) / 2;
+  const tilt = Math.min(10, n * 1.1);
+  const drop = Math.min(16, n * 1.6);
+  [...hand.children].forEach((el, i) => {
+    const k = mid ? (i - mid) / mid : 0;
+    el.style.setProperty('--rot', `${(k * tilt).toFixed(2)}deg`);
+    el.style.setProperty('--arc', `${((k * k - 1) * drop).toFixed(1)}px`); // middle cards ride highest
+  });
 }
 
-function animateNewCards(els) {
-  const from = $('#draw-pile').getBoundingClientRect();
+// Where did my new cards come from? Usually the deck, but after a 7 swap or a 0
+// rotation they are another player's old hand.
+function handSource(g) {
+  let src = null;
+  for (const ev of g.events) {
+    if (ev.seq <= app.lastSeq) continue;
+    if (ev.type === 'swap' && (ev.player === me() || ev.target === me())) {
+      src = ev.player === me() ? ev.target : ev.player;
+    } else if (ev.type === 'rotate') {
+      // hands move one seat along the direction of play
+      const active = g.players.filter(p => !p.place).map(p => p.id);
+      const i = active.indexOf(me());
+      if (i >= 0) src = active[(i - ev.direction + active.length) % active.length];
+    }
+  }
+  return (src && anchorFor(src)) || $('#draw-pile');
+}
+
+function animateNewCards(els, source) {
+  const from = source.getBoundingClientRect();
   const big = els.length > 3;
   els.forEach((el, i) => {
     const r = el.getBoundingClientRect();
+    // the animation replaces the card's own translate (its place on the arc), so it
+    // has to start and end with that offset or the card snaps when it lands
+    const arc = parseFloat(el.style.getPropertyValue('--arc')) || 0;
     const dx = from.left - r.left;
-    const dy = from.top - r.top;
+    const dy = from.top - r.top + arc;
     el.animate(
-      [{ translate: `${dx}px ${dy}px`, scale: `${from.width / r.width}`, opacity: 0.4 }, { translate: '0 0', scale: '1', opacity: 1 }],
+      [{ translate: `${dx}px ${dy}px`, scale: `${from.width / el.offsetWidth}`, opacity: 0.4 }, { translate: `0 ${arc}px`, scale: '1', opacity: 1 }],
       { duration: 380, delay: i * (big ? 55 : 110), easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards' },
     );
     sfx.deal(i);
@@ -660,13 +897,13 @@ function animateNewCards(els) {
 function renderActions(g, myP, myTurn) {
   const uno = $('#btn-uno');
   const count = myP?.count ?? 0;
-  const showUno = Boolean(myP) && g.phase === 'play' && count > 0 && count <= 2;
+  const showUno = Boolean(myP) && g.canUno;
   uno.classList.toggle('hidden', !showUno);
   const safe = g.safe && !myP?.vulnerable;
   uno.classList.toggle('done', safe);
   uno.textContent = safe ? t('btn.unoDone') : t('btn.uno');
   uno.disabled = safe;
-  uno.classList.toggle('hot', Boolean(myP?.vulnerable) || (count === 2 && myTurn && !g.safe && g.playable.length > 0));
+  uno.classList.toggle('hot', Boolean(myP?.vulnerable) || (count >= 2 && myTurn && !g.safe && g.playable.length > 0));
 
   const draw = $('#btn-draw');
   draw.classList.toggle('hidden', !g.canDraw);
@@ -687,43 +924,54 @@ function renderStatus(g, myP, myTurn) {
   const curName = cur?.name ?? '?';
   if (g.phase !== 'play') text = t(g.phase === 'gameOver' ? 'status.gameOver' : 'status.roundOver');
   else if (!myP) text = t('status.spectating', { name: curName });
-  else if (myTurn) {
+  else if (myP.place) text = t('status.finished', { place: myP.place, name: curName });
+  else if (app.sel) {
+    cls = 'mine';
+    const v = app.sel.value;
+    text = t('multi.hint', { v: isNaN(Number(v)) ? t(`value.${v}`) : v });
+  } else if (myTurn) {
     cls = 'mine';
     if (g.canChallenge) { text = t('status.challenge'); cls = 'danger'; }
     else if (g.pending.count > 0) { text = t('status.stack', { n: g.pending.count }); cls = 'danger'; }
     else if (g.drawn !== null) text = t(g.canPass ? 'status.drawnPass' : 'status.drawnForced');
-    else text = t(g.playable.length ? 'status.yourTurn' : 'status.noMatch');
+    else {
+      const next = turnOrder(g)[1];
+      text = t(g.playable.length ? 'status.yourTurn' : 'status.noMatch') + (next ? t('status.thenNext', { name: member(next.id)?.name ?? '?' }) : '');
+    }
   } else {
+    const wait = turnOrder(g).findIndex(p => p.id === me());
     text = t('status.theirTurn', { name: curName }) + (cur?.isBot ? ' 🤖' : '') + (cur && !cur.connected ? t('status.away') : '');
+    if (wait === 1) { text += t('status.youNext'); cls = 'soon'; }
+    else if (wait > 1) text += t('status.youIn', { n: wait });
   }
   el.className = `status ${cls}`;
   el.textContent = text;
 }
 
 // ---------------- turn timer ----------------
+// The ring around the active player's avatar runs down with the turn timer.
 
 function startTimer() {
   cancelAnimationFrame(app.timerRaf);
   const g = app.state?.game;
-  const box = $('#timer');
-  if (!g || g.phase !== 'play' || !g.settings.turnTimer) { box.classList.add('hidden'); return; }
-  box.classList.remove('hidden');
+  if (!g || g.phase !== 'play' || !g.settings.turnTimer) return;
   const total = g.settings.turnTimer * 1000;
-  const bar = box.firstElementChild;
   const tick = () => {
     const gg = app.state?.game;
     if (!gg || gg !== g) return;
     const left = g.turnStartedAt + total - (Date.now() + app.skew);
-    const frac = Math.max(0, Math.min(1, left / total));
-    bar.style.transform = `scaleX(${frac})`;
-    box.classList.toggle('low', left < 5000);
+    const ring = seatEl(g.current)?.querySelector('.ring');
+    if (ring) {
+      ring.style.setProperty('--t', Math.max(0, Math.min(1, left / total)).toFixed(4));
+      ring.classList.toggle('low', left < 5000);
+    }
     const sec = Math.ceil(left / 1000);
     if (g.current === me() && sec <= 5 && sec > 0 && sec !== app.lastTickSec) { app.lastTickSec = sec; sfx.tick(); }
     if (left > 0) app.timerRaf = requestAnimationFrame(tick);
   };
   tick();
 }
-function stopTimer() { cancelAnimationFrame(app.timerRaf); $('#timer').classList.add('hidden'); }
+function stopTimer() { cancelAnimationFrame(app.timerRaf); }
 
 // ================================================================
 // events → animations, sounds, log
@@ -732,12 +980,20 @@ function stopTimer() { cancelAnimationFrame(app.timerRaf); $('#timer').classList
 function processEvents(g, handRects, boot) {
   const fresh = g.events.filter(e => e.seq > app.lastSeq);
   if (g.events.length) app.lastSeq = Math.max(app.lastSeq, g.events[g.events.length - 1].seq);
-  let drawIdx = 0;
+  const ctx = { drawIdx: 0, playIdx: 0, combo: new Map() };
   for (const ev of fresh) {
     logEvent(ev);
     if (boot) continue;
-    try { animateEvent(ev, g, handRects, drawIdx); } catch (err) { console.warn(err); }
-    if (ev.type === 'draw') drawIdx += Math.min(ev.count, 4);
+    try { animateEvent(ev, g, handRects, ctx); } catch (err) { console.warn(err); }
+    if (ev.type === 'draw') ctx.drawIdx += Math.min(ev.count, 4);
+    if (ev.type === 'play') {
+      ctx.playIdx++;
+      ctx.combo.set(ev.player, (ctx.combo.get(ev.player) || 0) + 1);
+    }
+  }
+  // several cards dropped at once deserve a callout
+  for (const [, n] of ctx.combo) {
+    if (n >= 2) setTimeout(() => { vfx.shout(t('fx.combo', { n }), { color: '#fff', glow: n >= 3 ? '#c77dff' : '#4ea1ff', size: 0.8 + n * 0.12 }); sfx.shimmer(); }, 380 + n * 150);
   }
 }
 
@@ -748,51 +1004,131 @@ function rectAround(el, w) {
   return { left: cx - w / 2, top: cy - (w * 1.5) / 2, width: w, height: w * 1.5 };
 }
 
-function animateEvent(ev, g, handRects, drawIdx) {
+const centerOf = el => {
+  const r = el?.getBoundingClientRect();
+  return r && r.width ? { x: r.left + r.width / 2, y: r.top + r.height / 2, r } : null;
+};
+
+// Deal: backs fly round-robin from the deck to every opponent.
+function dealToSeats(g) {
+  const from = $('#draw-pile').getBoundingClientRect();
+  const seats = seatOrder(g).filter(p => p.id !== me());
+  const per = Math.min(7, ...seats.map(p => p.count));
+  seats.forEach((p, si) => {
+    const seat = seatEl(p.id);
+    if (!seat) return;
+    const to = rectAround(seat.querySelector('.avatar') || seat, 26);
+    for (let k = 0; k < per; k++) {
+      const delay = (k * seats.length + si) * 38;
+      const back = createBack();
+      back.classList.add('lite');
+      vfx.flyArc(back, from, to, { duration: 380, delay, rotFrom: 0, rotTo: 200 + Math.random() * 160, lift: 0.18 });
+      setTimeout(() => sfx.deal(0), delay + 300);
+    }
+  });
+}
+
+// Reverse: sparks fly off the ring along its new spin direction.
+function ringSparks(dir) {
+  const c = centerOf($('#direction'));
+  if (!c) return;
+  const r = c.r.width / 2 - 6;
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2;
+    vfx.burst(c.x + Math.cos(a) * r, c.y + Math.sin(a) * r, ['#ffffff', vfx.PALETTE[app.state?.game?.color] || '#ffd23f'], { n: 5, speed: 6, angle: a + (dir * Math.PI) / 2, spread: 0.5, grav: 0, life: 0.6 });
+  }
+}
+
+function animateEvent(ev, g, handRects, ctx) {
   const mine = ev.player === me();
+  const avatar = id => anchorFor(id);
   switch (ev.type) {
     case 'play': {
-      sfx.play();
-      if (ev.card.color === 'wild') setTimeout(sfx.wild, 120);
       const pile = $('#discard-pile');
       const toRect = pile.getBoundingClientRect();
-      let fromRect = mine ? handRects.get(ev.card.id) : null;
+      const dropped = app.drop?.rects.get(ev.card.id);
+      let fromRect = dropped || (mine ? handRects.get(ev.card.id) : null);
       if (!fromRect) {
         const seat = seatEl(ev.player);
-        fromRect = seat ? rectAround(seat, 40) : null;
+        fromRect = seat ? rectAround(seat.querySelector('.avatar') || seat, 40) : null;
       }
-      const top = pile.querySelector('.card.top');
-      const isTop = top && Number(top.dataset.id) === ev.card.id;
-      if (isTop) top.style.visibility = 'hidden';
-      fly(createCard(ev.card), fromRect, toRect, {
-        duration: mine ? 360 : 480,
-        rotFrom: mine ? 0 : -40,
+      if (dropped) app.drop.ghost.querySelector(`[data-id="${ev.card.id}"]`)?.remove();
+      // the card is already drawn on the pile: hide it until the flying copy lands
+      const onPile = pile.querySelector(`.card[data-id="${ev.card.id}"]`);
+      const colors = vfx.colorsFor(ev.card.color === 'wild' ? null : ev.card.color);
+      const heavy = ev.card.value === 'wild4' ? 2.2 : ev.card.value === 'draw2' ? 1.5 : ev.card.color === 'wild' ? 1.4 : 1;
+      const delay = ctx.playIdx * 150;
+      const duration = dropped ? 260 : mine ? 440 : 560;
+      if (onPile) {
+        onPile.style.visibility = 'hidden';
+        // never leave the real top card hidden (and the previous one showing) if the
+        // flight gets dropped or stalls
+        setTimeout(() => { onPile.style.visibility = ''; }, delay + duration + 600);
+      }
+      setTimeout(() => (dropped ? sfx.pick() : sfx.whoosh()), delay);
+      vfx.flyArc(createCard(ev.card), fromRect, toRect, {
+        duration,
+        delay,
+        rotFrom: mine ? 0 : -50,
         rotTo: tiltFor(ev.card.id),
-        onDone: () => { if (isTop) top.style.visibility = ''; },
+        lift: dropped ? 0.05 : mine ? 0.22 : 0.32,
+        flip: !mine,
+        trail: colors,
+        onLand: () => {
+          if (onPile) onPile.style.visibility = '';
+          sfx.slam(Math.min(1.4, heavy));
+          vfx.impact(toRect, ev.card.color === 'wild' ? null : ev.card.color, heavy);
+          if (ev.card.color === 'wild') {
+            vfx.colorWave(toRect, ev.color);
+            sfx.wild();
+          }
+          if (ev.card.value === 'wild4') {
+            sfx.boom();
+            vfx.shake($('#table'), 1.2);
+          }
+          if (ev.card.value === 'reverse') ringSparks(g.direction);
+        },
       });
+      if (app.drop && ![...app.drop.ghost.children].length) endDrop();
       break;
     }
     case 'draw': {
       const penalty = ev.reason !== 'draw';
-      for (let i = 0; i < Math.min(ev.count, 4); i++) sfx.draw(drawIdx + i);
-      if (penalty && ev.count >= 2) {
-        setTimeout(sfx.penalty, 150);
-        bubble(anchorFor(ev.player), `+${ev.count}`, 'bad');
-        if (mine) vibrate([60, 40, 60]);
+      for (let i = 0; i < Math.min(ev.count, 4); i++) sfx.draw(ctx.drawIdx + i);
+      const hit = penalty && ev.count >= 2;
+      if (hit) {
+        // land after the card that caused it
+        setTimeout(() => {
+          if (mine) {
+            ev.count >= 4 ? sfx.boom() : sfx.penalty();
+            vfx.flash('#ff3b30', Math.min(0.55, 0.2 + ev.count * 0.04));
+            vfx.shake($('#screen-game'), Math.min(2.2, 0.8 + ev.count / 6));
+            vfx.shout(`+${ev.count}`, { color: '#fff', glow: '#ff3b30', size: Math.min(1.6, 0.9 + ev.count / 10) });
+            vibrate([80, 40, 80, 40, 120]);
+          } else {
+            sfx.penalty();
+            vfx.stamp(avatar(ev.player), `+${ev.count}`, '#ff5a52');
+            const c = centerOf(avatar(ev.player));
+            if (c) vfx.burst(c.x, c.y, ['#ff5a52', '#ffffff'], { n: 18 + ev.count * 3, speed: 6 });
+          }
+        }, ctx.playIdx ? 480 : 120);
       }
       if (!mine) {
         const seat = seatEl(ev.player);
         if (!seat) break;
         const from = $('#draw-pile').getBoundingClientRect();
-        const to = rectAround(seat, 30);
-        for (let i = 0; i < Math.min(ev.count, 5); i++) {
-          fly(createBack(), from, to, { duration: 420, delay: (drawIdx + i) * 80, rotFrom: 0, rotTo: 15 });
+        const to = rectAround(seat.querySelector('.avatar') || seat, 28);
+        for (let i = 0; i < Math.min(ev.count, 6); i++) {
+          vfx.flyArc(createBack(), from, to, { duration: 440, delay: (hit && ctx.playIdx ? 380 : 0) + (ctx.drawIdx + i) * 70, rotTo: 160 + i * 25, lift: 0.2, trail: hit ? ['#ff5a52'] : null });
         }
       }
       break;
     }
     case 'skip':
-      setTimeout(() => { sfx.skip(); bubble(anchorFor(ev.player), t('ev.skipped'), 'skip'); }, 250);
+      setTimeout(() => {
+        sfx.skip();
+        vfx.stamp(avatar(ev.player), '⊘', '#ffd23f');
+      }, ctx.playIdx ? 450 : 150);
       break;
     case 'reverse': {
       sfx.reverse();
@@ -800,17 +1136,26 @@ function animateEvent(ev, g, handRects, drawIdx) {
       dir.classList.remove('flip');
       void dir.offsetWidth;
       dir.classList.add('flip');
-      bubble($('#discard-pile'), t('ev.reverse'), 'skip');
+      setTimeout(() => vfx.shout('⇄', { color: '#fff', glow: vfx.PALETTE[g.color] || '#ffd23f', size: 1.1 }), 300);
       break;
     }
-    case 'uno':
+    case 'uno': {
       sfx.uno();
-      bubble(anchorFor(ev.player), t('btn.uno'), 'uno');
+      vfx.shout(t('btn.uno'), { color: '#fff', glow: '#ff3b30', size: mine ? 1.35 : 1 });
+      const c = centerOf(avatar(ev.player));
+      if (c) {
+        vfx.shockwave(c.x, c.y, '#ff5a52', { from: 20, to: 140, width: 6 });
+        vfx.burst(c.x, c.y, ['#ff5a52', '#ffd23f', '#ffffff'], { n: 30, speed: 7 });
+      }
       vibrate(80);
       break;
+    }
     case 'caught': {
       sfx.caught();
-      bubble(anchorFor(ev.player), t('ev.caught'), 'bad');
+      bubble(avatar(ev.player), t('ev.caught'), 'bad');
+      vfx.shake(seatEl(ev.player), 1.6);
+      const c = centerOf(avatar(ev.player));
+      if (c) vfx.burst(c.x, c.y, ['#ff5a52', '#ffffff'], { n: 26, speed: 7 });
       const n = g.settings.unoPenalty;
       if (mine) toast(t('toast.caughtMe', { by: nameOf(ev.by), n }), 'error');
       else if (ev.by === me()) toast(t('toast.youCaught', { who: nameOf(ev.player), n }), 'good');
@@ -819,31 +1164,70 @@ function animateEvent(ev, g, handRects, drawIdx) {
     }
     case 'challenge':
       toast(t(ev.success ? 'toast.challengeOk' : 'toast.challengeBad', { a: nameOf(ev.player), b: nameOf(ev.target) }), ev.success ? 'good' : 'error', 3200);
+      vfx.shout(ev.success ? '⚖️ ✔' : '⚖️ ✘', { glow: ev.success ? '#3ddc84' : '#ff3b30' });
       break;
-    case 'swap':
+    case 'swap': {
       sfx.swap();
       toast(t('toast.swap', { a: nameOf(ev.player), b: nameOf(ev.target) }), 'info', 3000);
+      const a = centerOf(avatar(ev.player));
+      const b = centerOf(avatar(ev.target));
+      if (a && b) {
+        vfx.flyArc(createBack(), rectAround(avatar(ev.player), 30), rectAround(avatar(ev.target), 30), { duration: 600, lift: 0.3, trail: ['#c77dff', '#fff'] });
+        vfx.flyArc(createBack(), rectAround(avatar(ev.target), 30), rectAround(avatar(ev.player), 30), { duration: 600, lift: -0.3, trail: ['#4ea1ff', '#fff'] });
+      }
       break;
+    }
     case 'rotate':
       sfx.swap();
       toast(t('toast.rotate'), 'info', 3000);
+      vfx.colorWave($('#discard-pile').getBoundingClientRect(), 'wild');
+      ringSparks(g.direction);
       break;
     case 'jumpIn':
-      bubble(anchorFor(ev.player), t('ev.jumpIn'), 'good');
+      bubble(avatar(ev.player), t('ev.jumpIn'), 'good');
+      vfx.shout(t('ev.jumpIn'), { glow: '#b388ff', size: 0.8 });
       break;
     case 'timeout':
       toast(mine ? t('toast.timeoutMe') : t('toast.timeout', { name: nameOf(ev.player) }), mine ? 'error' : 'info');
       break;
     case 'reshuffle':
       toast(t('toast.reshuffle'), 'info', 1800);
+      vfx.impact($('#draw-pile').getBoundingClientRect(), null, 1);
       break;
     case 'roundStart':
       toast(t('toast.roundStart', { n: ev.round }), 'good', 1800);
+      requestAnimationFrame(() => dealToSeats(g));
       break;
+    case 'finished': {
+      setTimeout(mine ? sfx.win : sfx.uno, 300);
+      const c = centerOf(avatar(ev.player));
+      if (c) {
+        vfx.firework(c.x, c.y);
+        vfx.shockwave(c.x, c.y, '#ffd23f', { from: 20, to: 200, width: 8, life: 0.8 });
+      }
+      toast(mine ? t('toast.finishedMe', { place: ev.place, pts: ev.points }) : t('toast.finished', { name: nameOf(ev.player), place: ev.place }), mine ? 'good' : 'info', 2500);
+      if (mine) {
+        vfx.shout(t('seat.place', { n: ev.place }), { color: '#f5b800', size: 1.2 });
+        vfx.confetti(1800);
+        vfx.fireworks(1600);
+      } else {
+        bubble(avatar(ev.player), t('seat.place', { n: ev.place }), 'good');
+      }
+      break;
+    }
     case 'roundOver': {
-      const won = ev.winner === me();
-      setTimeout(won ? sfx.win : sfx.lose, 300);
-      bubble(anchorFor(ev.winner), won ? t('ev.iWin') : t('ev.out'), 'good');
+      if (ev.loser) {
+        const lost = ev.loser === me();
+        setTimeout(lost ? sfx.lose : sfx.win, 300);
+        bubble(avatar(ev.loser), t('ev.lastOne'), 'bad');
+        if (lost) vfx.flash('#1e293b', 0.6);
+      } else {
+        const won = ev.winner === me();
+        setTimeout(won ? sfx.win : sfx.lose, 300);
+        bubble(avatar(ev.winner), won ? t('ev.iWin') : t('ev.out'), 'good');
+      }
+      if (ev.gameOver) vfx.fireworks(4200);
+      else if (ev.winner === me()) vfx.fireworks(1800);
       break;
     }
     case 'abandoned':
@@ -851,6 +1235,221 @@ function animateEvent(ev, g, handRects, drawIdx) {
       break;
     default: break;
   }
+}
+
+// ---------------- direction ring ----------------
+// Spins with the direction of play (CSS animation), races while a +2/+4 is pending.
+
+function setRing(dir, racing) {
+  const ring = $('#direction');
+  ring.classList.toggle('ccw', dir < 0);
+  ring.classList.toggle('racing', racing);
+  // the arrowheads are drawn clockwise: mirror them when play runs the other way
+  const arrows = $('#dir-arrows');
+  const flipped = dir < 0 ? 'matrix(-1 0 0 1 200 0)' : '';
+  if ((arrows.getAttribute('transform') || '') !== flipped) arrows.setAttribute('transform', flipped);
+}
+
+// ---------------- drag & drop onto the pile ----------------
+
+const drag = { pile: null, w: 0, h: 0, el: null, x0: 0, y0: 0, active: false, ids: null, ghost: null, over: false, offX: 0, offY: 0, tilt: 0, lastX: 0, lastT: 0, color: null };
+
+function dragGroup(el) {
+  const g = app.state?.game;
+  if (!g || g.phase !== 'play' || !g.hand || app.busy) return null;
+  const id = Number(el.dataset.id);
+  const card = g.hand.find(c => c.id === id);
+  if (!card) return null;
+  const sel = app.sel;
+  if (sel && card.value === sel.value) {
+    if (!sel.ids.includes(id)) sel.ids.push(id);
+    return sel.ids.slice();
+  }
+  if (g.playable.includes(id)) return [id];
+  // a card that can't lead takes a playable twin along (multi-card play)
+  const lead = g.settings.multiPlay && g.hand.find(c => c.value === card.value && g.playable.includes(c.id));
+  return lead ? [lead.id, id] : null;
+}
+
+function startDrag(e) {
+  const ids = dragGroup(drag.el);
+  if (!ids) { drag.el = null; return; }
+  if (app.sel) renderSel();
+  drag.ids = ids;
+  drag.active = true;
+  // the card sits rotated on the arc: its bounding box is bigger than the card itself,
+  // so take the real size and center the ghost where the card is
+  const box = drag.el.getBoundingClientRect();
+  const lead = { width: drag.el.offsetWidth, height: drag.el.offsetHeight };
+  lead.left = box.left + (box.width - lead.width) / 2;
+  lead.top = box.top + (box.height - lead.height) / 2;
+  drag.offX = e.clientX - lead.left;
+  drag.offY = e.clientY - lead.top;
+  const ghost = document.createElement('div');
+  ghost.className = 'drag-ghost';
+  ghost.style.width = `${lead.width}px`;
+  ghost.style.height = `${lead.height}px`;
+  const hand = app.state.game.hand;
+  drag.color = hand.find(c => c.id === ids[0])?.color;
+  ids.forEach((id, i) => {
+    const src = $(`#hand .card[data-id="${id}"]`);
+    if (!src) return;
+    const card = createCard(hand.find(c => c.id === id));
+    card.style.setProperty('--cw', `${lead.width}px`);
+    card.style.translate = `${i * 16}px ${-i * 4}px`;
+    card.style.rotate = `${(i - (ids.length - 1) / 2) * 7}deg`;
+    ghost.appendChild(card);
+    src.classList.add('drag-src');
+  });
+  document.body.appendChild(ghost);
+  drag.ghost = ghost;
+  drag.lastX = e.clientX;
+  drag.lastT = performance.now();
+  drag.pile = $('#discard-pile').getBoundingClientRect(); // read once, not on every move
+  drag.w = lead.width;
+  drag.h = lead.height;
+  $('#discard-pile').classList.add('drop-ready');
+  document.body.classList.add('dragging');
+  sfx.pick();
+  moveDrag(e);
+}
+
+function moveDrag(e) {
+  const now = performance.now();
+  const vx = (e.clientX - drag.lastX) / Math.max(1, now - drag.lastT) * 16;
+  drag.lastX = e.clientX;
+  drag.lastT = now;
+  drag.tilt += (Math.max(-30, Math.min(30, vx * 2.2)) - drag.tilt) * 0.3;
+  const pile = drag.pile;
+  const pad = 46;
+  const over = e.clientX > pile.left - pad && e.clientX < pile.right + pad && e.clientY > pile.top - pad && e.clientY < pile.bottom + pad;
+  if (over !== drag.over) {
+    drag.over = over;
+    $('#discard-pile').classList.toggle('drop-hot', over);
+    if (over) {
+      sfx.pick();
+      vfx.shockwave(pile.left + pile.width / 2, pile.top + pile.height / 2, vfx.colorsFor(drag.color)[0], { from: pile.width * 0.5, to: pile.width * 1.3, width: 4, life: 0.4 });
+    }
+  }
+  drag.ghost.style.transform = `translate(${e.clientX - drag.offX}px, ${e.clientY - drag.offY}px) rotate(${drag.tilt}deg) scale(${over ? 1.12 : 1.06})`;
+  if (Math.random() < (over ? 0.8 : 0.35)) {
+    const cols = vfx.colorsFor(drag.color);
+    const x = e.clientX - drag.offX + Math.random() * drag.w;
+    const y = e.clientY - drag.offY + Math.random() * drag.h;
+    vfx.mote(x, y, cols[Math.floor(Math.random() * cols.length)], { size: 2 + Math.random() * 2 });
+  }
+}
+
+// Ghost cards glide back to their slots in the hand.
+function snapBack() {
+  const ghost = drag.ghost;
+  const ids = drag.ids || [];
+  resetDragState();
+  if (!ghost) return;
+  [...ghost.children].forEach((card, i) => {
+    const src = $(`#hand .card[data-id="${ids[i]}"]`);
+    const from = card.getBoundingClientRect();
+    const to = src?.getBoundingClientRect();
+    if (!to) return;
+    card.animate(
+      [{ transform: 'none' }, { transform: `translate(${to.left - from.left}px, ${to.top - from.top}px) rotate(${-drag.tilt}deg) scale(${to.width / from.width})` }],
+      { duration: 320, easing: 'cubic-bezier(.3,1.4,.5,1)', fill: 'forwards' },
+    );
+  });
+  // a timer rather than animation.finished, which stalls in background tabs
+  setTimeout(() => {
+    ghost.remove();
+    // a new drag may have started meanwhile: only un-hide the cards this one took
+    for (const id of ids) $(`#hand .card[data-id="${id}"]`)?.classList.remove('drag-src');
+  }, 340);
+}
+
+function resetDragState() {
+  $('#discard-pile').classList.remove('drop-ready', 'drop-hot');
+  document.body.classList.remove('dragging');
+  drag.active = false;
+  drag.el = null;
+  drag.over = false;
+}
+
+function endDrop() {
+  if (!app.drop) return;
+  clearTimeout(app.drop.timer);
+  app.drop.ghost.remove();
+  app.drop = null;
+  for (const el of $$('#hand .drag-src')) el.classList.remove('drag-src');
+}
+
+async function dropOnPile() {
+  const ghost = drag.ghost;
+  const ids = drag.ids;
+  resetDragState();
+  // park the ghost on the pile while the play goes through (pickers may open)
+  const pile = $('#discard-pile').getBoundingClientRect();
+  ghost.style.transition = 'transform .18s ease-out';
+  ghost.style.transform = `translate(${pile.left + (pile.width - drag.w) / 2}px, ${pile.top + (pile.height - drag.h) / 2}px) rotate(0deg) scale(1)`;
+  await new Promise(res => setTimeout(res, 190));
+  const rects = new Map([...ghost.children].map((c, i) => [ids[i], c.getBoundingClientRect()]));
+  for (const [i, c] of [...ghost.children].entries()) c.dataset.id = ids[i];
+  app.drop = { ghost, rects, timer: 0 };
+  const ok = await playCards(ids);
+  if (!ok) {
+    if (app.drop?.ghost === ghost) app.drop = null;
+    drag.ghost = ghost;
+    drag.ids = ids;
+    snapBack();
+    return;
+  }
+  // safety net in case the play events never reach us; started only now, so the
+  // color/target pickers can take as long as they like
+  if (app.drop?.ghost === ghost) app.drop.timer = setTimeout(endDrop, 2000);
+}
+
+function wireDrag() {
+  const hand = $('#hand');
+  hand.addEventListener('pointerdown', e => {
+    const card = e.target.closest('.card');
+    if (!card || e.button !== 0 || drag.active || app.drop) return;
+    drag.el = card;
+    drag.x0 = e.clientX;
+    drag.y0 = e.clientY;
+  });
+  document.addEventListener('pointermove', e => {
+    if (!drag.el) return;
+    if (!drag.active) {
+      if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 10) return;
+      startDrag(e);
+      if (!drag.active) return;
+    }
+    e.preventDefault();
+    moveDrag(e);
+  }, { passive: false });
+  const finish = e => {
+    if (!drag.el) return;
+    if (!drag.active) { drag.el = null; return; }
+    app.justDragged = true;
+    setTimeout(() => { app.justDragged = false; }, 0);
+    if (e.type === 'pointerup' && drag.over) dropOnPile();
+    else snapBack();
+  };
+  document.addEventListener('pointerup', finish);
+  document.addEventListener('pointercancel', finish);
+
+  // 3D tilt following the mouse
+  hand.addEventListener('pointermove', e => {
+    if (e.pointerType !== 'mouse' || drag.active) return;
+    const card = e.target.closest('.card');
+    if (!card) return;
+    const r = card.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width;
+    const py = (e.clientY - r.top) / r.height;
+    card.style.setProperty('--rx', `${((0.5 - py) * 18).toFixed(1)}deg`);
+    card.style.setProperty('--ry', `${((px - 0.5) * 18).toFixed(1)}deg`);
+  });
+  hand.addEventListener('pointerout', e => {
+    const card = e.target.closest('.card');
+    if (card && !card.contains(e.relatedTarget)) for (const v of ['--rx', '--ry']) card.style.removeProperty(v);
+  });
 }
 
 // Log lines are HTML, so names are escaped before they go into the template.
@@ -877,7 +1476,10 @@ function describe(ev) {
     case 'reshuffle': return t('log.reshuffle');
     case 'roundStart':
       return t('log.roundStart', { n: ev.round, dealer: esc(nameOf(ev.dealer, false)), card: esc(cardName(ev.card)) });
-    case 'roundOver': return t('log.roundOver', { ...p, pts: ev.points, over: ev.gameOver });
+    case 'finished': return t('log.finished', { ...p, place: ev.place, pts: ev.points });
+    case 'roundOver':
+      if (ev.loser) return t('log.lastOne', { who: esc(nameOf(ev.loser)), me: ev.loser === me(), over: ev.gameOver });
+      return t('log.roundOver', { ...p, pts: ev.points, over: ev.gameOver });
     case 'abandoned': return t('log.abandoned');
     case 'leave': return t('log.leave');
     default: return null;
@@ -914,13 +1516,57 @@ function cantPlayReason(g, card) {
   return t('reason.noMatch', { card: cardName(card), color: colorName(g.color), value });
 }
 
+// Multi-card play: tapping a card that has same-value twins selects it and lights up the
+// twins; tap twins to add them (the order picked is the order played, so the last one
+// sets the color), then "Play (n) cards". Tapping the first card again cancels.
+function renderSel() {
+  const sel = app.sel;
+  const hand = app.state?.game?.hand || [];
+  for (const el of $$('#hand .card')) {
+    const id = Number(el.dataset.id);
+    const pos = sel ? sel.ids.indexOf(id) : -1;
+    el.classList.toggle('selected', pos >= 0);
+    if (pos >= 0) el.dataset.order = pos + 1;
+    else delete el.dataset.order;
+    el.classList.toggle('twin', Boolean(sel) && pos < 0 && hand.some(c => c.id === id && c.value === sel.value));
+  }
+  $('#hand').classList.toggle('selecting', Boolean(sel));
+  $('#btn-multi').classList.toggle('hidden', !sel);
+  $('#btn-multi-cancel').classList.toggle('hidden', !sel);
+  if (sel) $('#btn-multi').textContent = t('multi.play', { n: sel.ids.length });
+  const g = app.state?.game;
+  if (g) renderStatus(g, g.players.find(p => p.id === me()), g.phase === 'play' && g.current === me());
+}
+
+function clearSel() {
+  if (!app.sel) return;
+  app.sel = null;
+  renderSel();
+}
+
 async function onCardClick(el) {
   const g = app.state?.game;
   if (!g || g.phase !== 'play' || !g.hand) return;
   const id = Number(el.dataset.id);
   const card = g.hand.find(c => c.id === id);
   if (!card) return;
-  if (!g.playable.includes(id)) {
+  const sel = app.sel;
+  if (sel && card.value === sel.value) {
+    if (id === sel.ids[0]) return clearSel();
+    const i = sel.ids.indexOf(id);
+    if (i >= 0) sel.ids.splice(i, 1);
+    else sel.ids.push(id);
+    sfx.pick();
+    const c = centerOf(el);
+    if (c && i < 0) vfx.burst(c.x, c.y - c.r.height * 0.3, vfx.colorsFor(card.color), { n: 12, speed: 4, life: 0.5 });
+    return renderSel();
+  }
+  app.sel = null;
+  const sameValue = c => g.settings.multiPlay && c.value === card.value;
+  // a same-number card that can't lead can still ride along with one that can
+  const first = g.playable.includes(id) ? card : g.hand.find(c => sameValue(c) && g.playable.includes(c.id));
+  if (!first) {
+    renderSel();
     el.classList.remove('nope');
     void el.offsetWidth;
     el.classList.add('nope');
@@ -929,25 +1575,38 @@ async function onCardClick(el) {
     return;
   }
   if (app.busy) return;
-  const opts = { cardId: id };
-  if (card.color === 'wild') {
-    const color = await pickColor(g.hand, id);
-    if (!color) return;
-    opts.color = color;
+  if (g.hand.some(c => sameValue(c) && c.id !== first.id)) {
+    app.sel = { value: first.value, ids: first.id === id ? [id] : [first.id, id] };
+    return renderSel();
   }
-  if (g.settings.sevenZero && card.value === '7' && g.hand.length > 1) {
-    const target = await pickTarget();
-    if (!target) return;
-    opts.target = target;
-  }
-  app.busy = true;
-  await act('play', opts);
-  app.busy = false;
+  await playCards([first.id]);
 }
 
-function pickColor(hand, excludeId) {
+async function playCards(ids) {
+  const g = app.state?.game;
+  const first = g?.hand?.find(c => c.id === ids[0]);
+  if (!first || app.busy) return false;
+  const opts = { cardIds: ids };
+  if (first.color === 'wild') {
+    const color = await pickColor(g.hand, ids);
+    if (!color) return false;
+    opts.color = color;
+  }
+  if (g.settings.sevenZero && first.value === '7' && g.hand.length > ids.length) {
+    const target = await pickTarget();
+    if (!target) return false;
+    opts.target = target;
+  }
+  clearSel();
+  app.busy = true;
+  const ok = await act('play', opts);
+  app.busy = false;
+  return ok;
+}
+
+function pickColor(hand, played) {
   const counts = { red: 0, yellow: 0, green: 0, blue: 0 };
-  for (const c of hand) if (c.id !== excludeId && counts[c.color] !== undefined) counts[c.color]++;
+  for (const c of hand) if (!played.includes(c.id) && counts[c.color] !== undefined) counts[c.color]++;
   for (const btn of $$('#modal-color .cbtn')) {
     const col = btn.dataset.color;
     btn.innerHTML = `${esc(cap(colorName(col)))}<span class="count">${esc(t('picker.inHand', { n: counts[col] }))}</span>`;
@@ -957,7 +1616,7 @@ function pickColor(hand, excludeId) {
 
 function pickTarget() {
   const g = app.state.game;
-  $('#target-list').innerHTML = g.players.filter(p => p.id !== me()).map(p => {
+  $('#target-list').innerHTML = g.players.filter(p => p.id !== me() && !p.place).map(p => {
     const m = member(p.id);
     return `<button class="btn" data-target="${p.id}">${avatarHtml(m)}<span>${esc(m?.name ?? '?')}</span><span class="cnt">${esc(t('cards.count', { n: p.count }))}</span></button>`;
   }).join('');
@@ -1005,6 +1664,7 @@ function maybeShowResults(g, boot) {
   clearTimeout(app.resultsTimer);
   closeModal('color');
   closeModal('target');
+  app.sel = null;
   app.resultsTimer = setTimeout(() => showResults(!boot), boot ? 50 : 1500);
 }
 
@@ -1039,22 +1699,24 @@ function showResults(celebrate) {
       : (r.winner === me() ? t('res.youWonRound', { n: g.round }) : t('res.wonRound', { name: nameOf(r.winner), n: g.round }));
     const sub = r.gameOver
       ? t('res.final', { pts: r.scores[champ] }) + (target ? t('res.targetSuffix', { target }) : '')
-      : t('res.roundSub', { pts: r.points, target });
+      : r.loser ? t('res.lastSub', { name: nameOf(r.loser), target }) : t('res.roundSub', { pts: r.points, target });
+    const awarded = r.awarded || { [r.winner]: r.points };
     body.innerHTML = `
       <p class="results-title">${esc(title)}</p>
       <p class="results-sub">${esc(sub)}</p>
       <table class="results-table"><tbody>
         ${scoreRows(ids, r.scores, target, id => {
           const left = r.hands[id] || [];
+          const place = r.ranking ? r.ranking.indexOf(id) + 1 : 0;
           const cards = left.length
             ? `<div class="left-cards">${left.slice(0, 16).map(c => createCard(c).outerHTML).join('')}${left.length > 16 ? `<small>+${left.length - 16}</small>` : ''}</div>`
-            : `<b>${esc(t('res.out'))}</b>`;
-          return `<td>${cards}</td><td class="num">${id === r.winner ? `+${r.points}` : ''}</td>`;
+            : `<b>${esc(place ? t('seat.place', { n: place }) : t('res.out'))}</b>`;
+          return `<td>${cards}</td><td class="num">${id in awarded ? `+${awarded[id]}` : ''}</td>`;
         })}
       </tbody></table>`;
     $$('#results-body tr').forEach(tr => tr.classList.toggle('winner', tr.dataset.id === r.winner));
-    if (celebrate && r.gameOver && champ === me()) confetti();
-    else if (celebrate && r.winner === me()) confetti(2000);
+    if (celebrate && r.gameOver && champ === me()) vfx.confetti();
+    else if (celebrate && r.winner === me()) vfx.confetti(2000);
   }
   renderResultsActions();
   openModal('results');
@@ -1183,6 +1845,7 @@ function setDrawerTab(tab) {
 
 function relabel() {
   labelSettingsForm();
+  updateFxButton();
   updateMuteButtons();
   renderRoomList();
   renderAddresses($('#home-addresses'));
@@ -1197,7 +1860,10 @@ function relabel() {
 
   // force the keyed renderers to rebuild
   app.lobbySig = '';
-  seatsSig = '';
+  $('#opponents').innerHTML = '';
+  boardSig = '';
+  stripSig = '';
+  infoSig = '';
   drawSig = '';
   discardSig = '';
   $('#hand').innerHTML = '';
@@ -1230,8 +1896,14 @@ function confirmTap(btn, prompt) {
   return false;
 }
 
+function updateFxButton() {
+  $('#btn-fx').textContent = t('menu.fx', { on: !vfx.motion.reduced });
+}
+
 function updateMuteButtons() {
-  for (const b of $$('.mute-btn')) b.textContent = isMuted() ? '🔇' : '🔊';
+  for (const b of $$('.mute-btn')) {
+    b.textContent = b.classList.contains('icon') ? (isMuted() ? '🔇' : '🔊') : t('menu.sound', { on: !isMuted() });
+  }
 }
 
 async function leaveRoom() {
@@ -1244,6 +1916,7 @@ function wire() {
   buildSettingsForm();
   $('#reactions').innerHTML = REACTIONS.map(e => `<button type="button" data-react="${e}">${e}</button>`).join('');
   updateMuteButtons();
+  updateFxButton();
   onLangChange(relabel);
 
   const nameInput = $('#name-input');
@@ -1270,7 +1943,9 @@ function wire() {
     if (k && confirmTap(k, t('confirm.sure'))) act('kick', { target: k.dataset.kick });
   });
 
+  wireDrag();
   $('#hand').addEventListener('click', e => {
+    if (app.justDragged) return;
     const card = e.target.closest('.card');
     if (card) onCardClick(card);
   });
@@ -1285,6 +1960,8 @@ function wire() {
   $('#btn-pass').addEventListener('click', () => act('pass'));
   $('#btn-challenge').addEventListener('click', () => act('challenge'));
   $('#btn-uno').addEventListener('click', () => act('uno'));
+  $('#btn-multi').addEventListener('click', () => { if (app.sel) playCards(app.sel.ids.slice()); });
+  $('#btn-multi-cancel').addEventListener('click', clearSel);
   $('#btn-sort').addEventListener('click', () => {
     app.sortMode = SORT_MODES[(SORT_MODES.indexOf(app.sortMode) + 1) % SORT_MODES.length];
     store.set('sort', app.sortMode);
@@ -1339,13 +2016,19 @@ function wire() {
         setLang(getLang() === 'fr' ? 'en' : 'fr');
         toast(t('toast.lang'), 'good', 1500);
         break;
-      case 'rules': openModal('rules'); break;
+      case 'rules': closeModal('menu'); openModal('rules'); break;
       case 'mute': setMuted(!isMuted()); updateMuteButtons(); if (!isMuted()) sfx.turn(); break;
       case 'chat': toggleDrawer(); break;
       case 'scores': showScoreboard(); break;
       case 'menu':
         $('#btn-end-game').classList.toggle('hidden', !isHost());
         openModal('menu');
+        break;
+      case 'fx':
+        vfx.setEffects(vfx.motion.reduced);
+        updateFxButton();
+        toast(t(vfx.motion.reduced ? 'toast.fxOff' : 'toast.fxOn'), 'good', 1600);
+        if (!vfx.motion.reduced) { vfx.shout('✨', { glow: '#ffd23f' }); vfx.fireworks(900); }
         break;
       case 'fullscreen':
         if (document.fullscreenElement) document.exitFullscreen?.();
@@ -1381,6 +2064,7 @@ function wire() {
     if (e.key === 'Escape') {
       const open = $$('.modal').find(m => !m.classList.contains('hidden'));
       if (open) closeModal(open.id.replace('modal-', ''));
+      else if (app.sel) clearSel();
       else if (app.drawerOpen) toggleDrawer(false);
       return;
     }
@@ -1397,11 +2081,12 @@ function wire() {
 
   window.addEventListener('resize', layoutHand);
   document.addEventListener('visibilitychange', () => {
+    keepAwake(document.body.dataset.screen === 'game');
     if (!document.hidden) document.title = t('title.page');
   });
   // Phones kill background connections: reconnect when we come back.
   window.addEventListener('pageshow', () => {
-    if (app.session && (!app.es || app.es.readyState === EventSource.CLOSED)) connect();
+    if (app.session && !usePolling && (!app.es || app.es.readyState === EventSource.CLOSED)) connect();
   });
 }
 

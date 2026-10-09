@@ -1,7 +1,8 @@
 'use strict';
 
 // Zero-dependency LAN UNO server: static files + JSON API + Server-Sent Events.
-// Run: node server.js [port]
+// Run: node server.js [port] [--online]
+// --online also opens a public https link (Cloudflare quick tunnel) for friends elsewhere.
 
 const http = require('http');
 const fs = require('fs');
@@ -11,9 +12,13 @@ const crypto = require('crypto');
 const { UnoGame, GameError, DEFAULT_SETTINGS, sanitizeSettings } = require('./src/game');
 const { errorText, systemText } = require('./src/messages');
 const { chooseMove, applyMove } = require('./src/ai');
+const { startTunnel } = require('./src/tunnel');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const START_PORT = Number(process.argv[2] || process.env.PORT || 3000);
+const ARGS = process.argv.slice(2);
+const START_PORT = Number(ARGS.find(a => /^\d+$/.test(a)) || process.env.PORT || 3000);
+const ONLINE = ARGS.includes('--online');
+const MAX_ROOMS = 200;           // online, anyone with the link can create rooms
 const MAX_MEMBERS = 10;
 const AWAY_GRACE_MS = 10000;     // autopilot kicks in this long after someone drops
 const ROOM_IDLE_MS = 30 * 60e3;  // rooms with nobody connected are cleaned up
@@ -33,6 +38,7 @@ const MIME = {
 };
 
 const rooms = new Map();
+let publicUrl = null;            // https://….trycloudflare.com while the online link is up
 const randomId = (bytes = 6) => crypto.randomBytes(bytes).toString('hex');
 
 function newRoomCode() {
@@ -260,11 +266,13 @@ class Room {
     const m = this.members.get(pid);
     const move = chooseMove(g, pid);
     if (reason === 'timeout' && g.drawn === null) g.emit('timeout', { player: pid });
-    if (move.type === 'play' && g.hands[pid].length === 2) {
-      // bots remember most of the time; autopilot always covers for a human
-      if (!m || !m.isBot || Math.random() < 0.8) g.callUno(pid);
-    }
+    // bots remember most of the time; autopilot always covers for a human
+    const callUno = move.type === 'play' && g.hands[pid].length - [].concat(move.cardId).length === 1
+      && (!m || !m.isBot || Math.random() < 0.8);
+    // with unoLastCard the call only counts once the card is down
+    if (callUno && !g.settings.unoLastCard) g.callUno(pid);
     applyMove(g, pid, move);
+    if (callUno && g.settings.unoLastCard && g.phase === 'play' && g.hands[pid]?.length === 1) g.callUno(pid);
     this.broadcast();
   }
 
@@ -326,7 +334,7 @@ class Room {
         this.system('lobby');
         break;
       case 'play':
-        needGame().play(m.id, Number(body.cardId), { color: body.color, target: body.target });
+        needGame().play(m.id, [].concat(body.cardIds ?? body.cardId).slice(0, 20), { color: body.color, target: body.target });
         break;
       case 'draw': needGame().draw(m.id); break;
       case 'pass': needGame().pass(m.id); break;
@@ -423,35 +431,119 @@ function openStream(req, res, url) {
   req.socket.setTimeout(0);
   req.socket.setNoDelay(true);
   res.writeHead(200, {
-    'Content-Type': 'text/event-stream; charset=utf-8',
+    // exactly this (no charset): tunnels/proxies match it to stream instead of buffering
+    'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
     Connection: 'keep-alive',
     'X-Accel-Buffering': 'no',
   });
   res.write('retry: 1500\n\n');
+  attachClient(room, member, res);
+  req.on('close', () => detachClient(room, member, res));
+}
+
+// A member's clients are anything with write()/end() that takes SSE frames: a live
+// event stream, or a PollClient for networks that hold streams back.
+function attachClient(room, member, client) {
   const wasConnected = member.connected;
-  member.clients.add(res);
+  member.clients.add(client);
   member.connected = true;
   member.disconnectedAt = null;
-  sse(res, { type: 'chatHistory', messages: room.chat });
+  sse(client, { type: 'chatHistory', messages: room.chat });
   if (!wasConnected && room.members.size > 1) room.system('connected', { name: member.name });
   room.broadcast();
-
-  req.on('close', () => {
-    member.clients.delete(res);
-    if (member.clients.size || !room.members.has(member.id)) return;
-    member.connected = false;
-    member.disconnectedAt = Date.now();
-    room.broadcast();
-  });
 }
+
+function detachClient(room, member, client) {
+  if (!member.clients.delete(client)) return;
+  if (member.clients.size || !room.members.has(member.id)) return;
+  member.connected = false;
+  member.disconnectedAt = Date.now();
+  room.broadcast();
+}
+
+// ---------------- long polling ----------------
+// Some proxies (Cloudflare quick tunnels among them) deliver an event stream only when
+// it closes. Those browsers poll instead: each request is held open until there is
+// something to say, so updates still arrive right away.
+
+const POLL_HOLD_MS = 25000;   // answer an idle poll after this long
+const POLL_GONE_MS = 12000;   // no poll for this long = disconnected
+const polls = new Map();      // cid -> PollClient
+
+class PollClient {
+  constructor(room, member) {
+    this.id = randomId(12);
+    this.room = room;
+    this.member = member;
+    this.queue = [];
+    this.waiting = null;      // the held response
+    this.holdTimer = 0;
+    this.closed = false;
+    this.seen = Date.now();
+  }
+
+  write(frame) {
+    if (!frame.startsWith('data: ')) return; // pings and retry hints are for streams
+    this.queue.push(JSON.parse(frame.slice(6)));
+    if (this.waiting) setImmediate(() => this.flush()); // let a burst of writes batch up
+  }
+
+  end() {
+    this.closed = true;
+    if (this.waiting) setImmediate(() => this.flush());
+  }
+
+  hold(res) {
+    this.seen = Date.now();
+    if (this.waiting) this.flush(); // a newer poll replaces the old one
+    this.waiting = res;
+    res.on('close', () => { if (this.waiting === res) { this.waiting = null; clearTimeout(this.holdTimer); } });
+    if (this.queue.length || this.closed) return this.flush();
+    this.holdTimer = setTimeout(() => this.flush(), POLL_HOLD_MS);
+  }
+
+  flush() {
+    const res = this.waiting;
+    if (!res) return;
+    this.waiting = null;
+    clearTimeout(this.holdTimer);
+    json(res, 200, { cid: this.id, messages: this.queue.splice(0) });
+    this.seen = Date.now();
+    if (this.closed) polls.delete(this.id);
+  }
+}
+
+function openPoll(req, res, url) {
+  const cid = url.searchParams.get('cid');
+  let client = cid && polls.get(cid);
+  if (!client) {
+    const { room, member } = findMember(url.searchParams.get('code'), url.searchParams.get('token'));
+    if (!member) return fail(res, 404, 'memberNotFound');
+    client = new PollClient(room, member);
+    polls.set(client.id, client);
+    attachClient(room, member, client);
+  }
+  req.socket.setTimeout(0);
+  client.hold(res);
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [cid, c] of polls) {
+    if (c.waiting || now - c.seen < POLL_GONE_MS) continue;
+    polls.delete(cid);
+    detachClient(c.room, c.member, c);
+  }
+}, 3000).unref();
 
 async function handleApi(req, res, url) {
   const route = url.pathname.slice('/api/'.length);
 
   if (req.method === 'GET') {
     if (route === 'stream') return openStream(req, res, url);
-    if (route === 'info') return json(res, 200, { addresses: lanAddresses(), port: server.address().port });
+    if (route === 'poll') return openPoll(req, res, url);
+    if (route === 'info') return json(res, 200, { addresses: lanAddresses(), port: server.address().port, online: ONLINE, publicUrl });
     if (route === 'rooms') {
       const list = [...rooms.values()]
         .filter(r => r.anyoneConnected)
@@ -470,6 +562,7 @@ async function handleApi(req, res, url) {
   const body = await readBody(req);
 
   if (route === 'create') {
+    if (rooms.size >= MAX_ROOMS) return fail(res, 503, 'tooManyRooms');
     const room = new Room(newRoomCode());
     rooms.set(room.code, room);
     const m = room.addMember({ name: cleanName(body.name) });
@@ -560,7 +653,20 @@ function listen(port, attemptsLeft = 10) {
       console.log(`  Friends open:      http://${a.address}:${p}   [${a.iface}]${note}`);
     }
     console.log(`${line}\n  Press Ctrl+C to stop.\n`);
+    if (ONLINE) goOnline(p);
   });
+}
+
+function goOnline(port) {
+  console.log('  Opening the online link...');
+  startTunnel(port, {
+    onUrl(url) {
+      publicUrl = url;
+      if (!url) return;
+      const line = '='.repeat(56);
+      console.log(`\n${line}\n  ONLINE! Friends anywhere can open:\n\n     ${url}\n\n  (it's also in the lobby, with a QR code)\n${line}\n`);
+    },
+  }).catch(err => console.log(`  Online mode failed: ${err.message}\n  Playing on the same Wi-Fi still works.`));
 }
 
 if (require.main === module) listen(START_PORT);
