@@ -402,7 +402,13 @@ class UnoGame {
     }
     this.color = chosen;
 
-    if (hand.length === 1 && !this.unoSafe.has(pid)) this.vulnerable.set(pid, this.seq);
+    if (hand.length === 1 && !this.unoSafe.has(pid)) {
+      // UNO called together with the play (pressed before / with the cards)
+      if (opts.uno) {
+        this.unoSafe.add(pid);
+        this.emit('uno', { player: pid });
+      } else this.vulnerable.set(pid, this.seq);
+    }
     const out = hand.length === 0;
     const leaving = out && this.settings.lastStanding;
     if (leaving) this.finished.push(pid);

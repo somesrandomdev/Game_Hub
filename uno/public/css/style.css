@@ -514,6 +514,7 @@ input::placeholder { color: #b3a993; }
 }
 .uno-fab:active { transform: translateY(3px); box-shadow: 0 2px 0 var(--ink); }
 .uno-fab.hot { animation: pulse .9s ease-in-out infinite; }
+.uno-fab.armed { background: var(--yellow, #f5c400); color: var(--ink); -webkit-text-stroke: 0; font-family: var(--font); font-size: 1rem; }
 .uno-fab.done { background: var(--green); font-family: var(--font); font-size: 1rem; -webkit-text-stroke: 0; cursor: default; box-shadow: 0 2px 0 var(--ink); }
 
 .me-bar {

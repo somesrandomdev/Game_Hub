@@ -334,7 +334,7 @@ class Room {
         this.system('lobby');
         break;
       case 'play':
-        needGame().play(m.id, [].concat(body.cardIds ?? body.cardId).slice(0, 20), { color: body.color, target: body.target });
+        needGame().play(m.id, [].concat(body.cardIds ?? body.cardId).slice(0, 20), { color: body.color, target: body.target, uno: Boolean(body.uno) });
         break;
       case 'draw': needGame().draw(m.id); break;
       case 'pass': needGame().pass(m.id); break;

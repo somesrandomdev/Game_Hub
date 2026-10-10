@@ -214,6 +214,18 @@ test('calling UNO after the fact still saves you if nobody caught you yet', () =
   assert.throws(() => g.catchUno('b', 'a'), /Too late/);
 });
 
+test('UNO can be called together with the play, even with UNO on the last card', () => {
+  const g = rig({
+    settings: { unoLastCard: true },
+    hands: { a: [card('red', '5'), card('blue', '9')], b: [card('green', '1')], c: [card('green', '2')] },
+    top: card('red', '3'),
+  });
+  g.play('a', g.hands.a[0].id, { uno: true });
+  assert.ok(g.unoSafe.has('a'));
+  assert.ok(!g.vulnerable.has('a'));
+  assert.ok(g.events.some(e => e.type === 'uno' && e.player === 'a'));
+});
+
 test('the window to catch closes once the next player acts', () => {
   const x = card('red', '1');
   const g = rig({ hands: { a: [x, card('red', '2')], b: [card('red', '3'), card('red', '4')], c: [card('blue', '3')] }, top: card('red', '5') });

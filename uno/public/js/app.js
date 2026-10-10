@@ -71,6 +71,7 @@ const app = {
   skew: 0,
   lobbySig: '',
   sel: null,           // multi-card selection: { value, ids }
+  unoArmed: false,     // UNO pressed before playing: the next play carries the call
   drop: null,          // cards dropped on the pile, waiting for the server: { ghost, rects }
   justDragged: false,
   chatMsgs: [],   // kept so chat can be re-rendered when the language changes
@@ -894,16 +895,46 @@ function animateNewCards(els, source) {
   });
 }
 
+// What pressing UNO! does right now: 'play' = play the selected cards and call UNO with
+// them, 'call' = plain call, 'arm' = remember it for the next play, null = nothing.
+function unoMode(g, myP, myTurn) {
+  if (!myP || g.phase !== 'play' || !g.hand) return null;
+  const count = g.hand.length;
+  if (app.sel && count - app.sel.ids.length === 1 && !g.safe) return 'play';
+  if (g.canUno && (count === 1 || !g.settings.unoLastCard)) return 'call';
+  if (!myTurn || g.safe || count < 2 || !g.playable.length) return null;
+  // could one play leave a single card? (same rule as the server's nearUno, minus unoLastCard)
+  const groups = {};
+  for (const c of g.hand) groups[c.value] = (groups[c.value] || 0) + 1;
+  return count === 2 || (g.settings.multiPlay && Math.max(...Object.values(groups)) >= count - 1) ? 'arm' : null;
+}
+
+function pressUno() {
+  const g = app.state?.game;
+  if (!g) return;
+  const myP = g.players.find(p => p.id === me());
+  const mode = unoMode(g, myP, g.current === me());
+  if (mode === 'play') playCards(app.sel.ids.slice(), { uno: true });
+  else if (mode === 'call') act('uno');
+  else if (mode === 'arm') {
+    app.unoArmed = !app.unoArmed;
+    if (app.unoArmed) sfx.pick();
+    renderActions(g, myP, true);
+  }
+}
+
 function renderActions(g, myP, myTurn) {
   const uno = $('#btn-uno');
   const count = myP?.count ?? 0;
-  const showUno = Boolean(myP) && g.canUno;
-  uno.classList.toggle('hidden', !showUno);
+  const mode = unoMode(g, myP, myTurn);
+  if (mode !== 'arm') app.unoArmed = false;
   const safe = g.safe && !myP?.vulnerable;
+  uno.classList.toggle('hidden', !mode && !(safe && g.canUno));
   uno.classList.toggle('done', safe);
-  uno.textContent = safe ? t('btn.unoDone') : t('btn.uno');
+  uno.classList.toggle('armed', app.unoArmed);
+  uno.textContent = safe ? t('btn.unoDone') : app.unoArmed ? t('btn.unoArmed') : t('btn.uno');
   uno.disabled = safe;
-  uno.classList.toggle('hot', Boolean(myP?.vulnerable) || (count >= 2 && myTurn && !g.safe && g.playable.length > 0));
+  uno.classList.toggle('hot', !app.unoArmed && (Boolean(myP?.vulnerable) || (mode && mode !== 'call') || (count >= 2 && myTurn && !g.safe && g.playable.length > 0)));
 
   const draw = $('#btn-draw');
   draw.classList.toggle('hidden', !g.canDraw);
@@ -1535,7 +1566,12 @@ function renderSel() {
   $('#btn-multi-cancel').classList.toggle('hidden', !sel);
   if (sel) $('#btn-multi').textContent = t('multi.play', { n: sel.ids.length });
   const g = app.state?.game;
-  if (g) renderStatus(g, g.players.find(p => p.id === me()), g.phase === 'play' && g.current === me());
+  if (g) {
+    const myP = g.players.find(p => p.id === me());
+    const myTurn = g.phase === 'play' && g.current === me();
+    renderStatus(g, myP, myTurn);
+    renderActions(g, myP, myTurn);
+  }
 }
 
 function clearSel() {
@@ -1582,11 +1618,11 @@ async function onCardClick(el) {
   await playCards([first.id]);
 }
 
-async function playCards(ids) {
+async function playCards(ids, extra = {}) {
   const g = app.state?.game;
   const first = g?.hand?.find(c => c.id === ids[0]);
   if (!first || app.busy) return false;
-  const opts = { cardIds: ids };
+  const opts = { cardIds: ids, uno: Boolean(extra.uno || app.unoArmed) };
   if (first.color === 'wild') {
     const color = await pickColor(g.hand, ids);
     if (!color) return false;
@@ -1601,6 +1637,7 @@ async function playCards(ids) {
   app.busy = true;
   const ok = await act('play', opts);
   app.busy = false;
+  if (ok) app.unoArmed = false;
   return ok;
 }
 
@@ -1959,7 +1996,7 @@ function wire() {
   $('#btn-draw').addEventListener('click', () => act('draw'));
   $('#btn-pass').addEventListener('click', () => act('pass'));
   $('#btn-challenge').addEventListener('click', () => act('challenge'));
-  $('#btn-uno').addEventListener('click', () => act('uno'));
+  $('#btn-uno').addEventListener('click', pressUno);
   $('#btn-multi').addEventListener('click', () => { if (app.sel) playCards(app.sel.ids.slice()); });
   $('#btn-multi-cancel').addEventListener('click', clearSel);
   $('#btn-sort').addEventListener('click', () => {
@@ -2073,7 +2110,7 @@ function wire() {
     const k = e.key.toLowerCase();
     if (k === 'd' && g.canDraw) act('draw');
     else if (k === 'p' && g.canPass) act('pass');
-    else if (k === 'u') act('uno');
+    else if (k === 'u') pressUno();
     else if (k === 'c' && g.canChallenge) act('challenge');
     else if (k === 't') toggleDrawer();
     else if (k === 's') $('#btn-sort').click();
