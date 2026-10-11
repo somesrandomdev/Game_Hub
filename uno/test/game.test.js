@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { UnoGame, GameError, buildDeck, cardPoints, sanitizeSettings, COLORS } = require('../src/game');
+const { UnoGame, GameError, buildDeck, buildFlipDeck, cardPoints, sanitizeSettings, COLORS, DARK_COLORS } = require('../src/game');
 const { chooseMove, applyMove } = require('../src/ai');
 
 function seeded(seed) {
@@ -320,7 +320,7 @@ test('going out scores the other hands and can end the game', () => {
   g.unoSafe.add('a');
   g.play('a', last.id);
   assert.equal(g.phase, 'gameOver');
-  assert.equal(g.scores.a, 79);
+  assert.equal(g.scores.a, 56, '(59 + 20) / √2 opponents');
   assert.equal(g.roundResult.winner, 'a');
 });
 
@@ -524,7 +524,7 @@ test('last standing: going out does not end the round', () => {
   g.play('a', g.hands.a[0].id);
   assert.equal(g.phase, 'play');
   assert.deepEqual(g.finished, ['a']);
-  assert.equal(g.scores.a, 100, '2 opponents still in → 2 × 50');
+  assert.equal(g.scores.a, 100, 'first out');
   assert.equal(g.current, 'b');
   g.play('b', g.hands.b[0].id);
   assert.equal(g.current, 'c');
@@ -605,4 +605,205 @@ test('players leaving between rounds until one is left ends the game', () => {
   g.removePlayer('c');
   assert.equal(g.phase, 'gameOver');
   assert.throws(() => g.nextRound(), e => e.code === 'roundNotOver');
+});
+
+// ---------- UNO Flip ----------
+
+test('the Flip deck has 112 two-sided cards', () => {
+  const deck = buildFlipDeck(seeded(3));
+  assert.equal(deck.length, 112);
+  assert.equal(new Set(deck.map(c => c.id)).size, 112);
+  assert.ok(deck.every(c => [...COLORS, 'wild'].includes(c.color) && [...DARK_COLORS, 'wild'].includes(c.back.color)));
+  assert.equal(deck.filter(c => c.value === 'wild2').length, 4);
+  assert.equal(deck.filter(c => c.back.value === 'wildColor').length, 4);
+  assert.equal(deck.filter(c => c.back.value === 'skipAll').length, 8);
+  assert.equal(deck.filter(c => c.value === 'flip').length, 8);
+  assert.equal(deck.filter(c => c.back.value === 'flip').length, 8);
+});
+
+// A Flip card: the face in play, plus its other side as `back`.
+const fcard = (color, value, back) => ({ id: nextId++, color, value, back });
+
+test('a Flip card turns every card over and the dark side takes over', () => {
+  const flip = fcard('red', 'flip', { color: 'teal', value: '4' });
+  const g = rig({
+    settings: { flip: true },
+    hands: { a: [flip, fcard('blue', '2', { color: 'pink', value: '7' })], b: [fcard('green', '3', { color: 'orange', value: 'skipAll' })], c: [fcard('red', '9', { color: 'purple', value: '1' })] },
+    top: fcard('red', '5', { color: 'pink', value: '2' }),
+  });
+  g.side = 'light';
+  g.play('a', flip.id);
+  assert.equal(g.side, 'dark');
+  assert.deepEqual([g.top.color, g.top.value], ['teal', '4']);
+  assert.equal(g.color, 'teal');
+  assert.deepEqual([g.hands.a[0].color, g.hands.a[0].value], ['pink', '7']);
+  assert.deepEqual(g.hands.a[0].back, { color: 'blue', value: '2' });
+  assert.equal(g.current, 'b');
+  // opponents see the other side of your cards; you never see your own backs
+  const v = g.view('b');
+  assert.deepEqual(v.players.find(p => p.id === 'a').backs, [{ color: 'blue', value: '2' }]);
+  assert.equal(v.players.find(p => p.id === 'b').backs, undefined);
+  assert.ok(v.hand.every(c => !('back' in c)));
+  assert.ok(!('back' in v.top));
+});
+
+test('a Flip that turns up a wild needs a color for the new side', () => {
+  const flip = fcard('red', 'flip', { color: 'wild', value: 'wild' });
+  const g = rig({
+    settings: { flip: true },
+    hands: { a: [flip, fcard('blue', '2', { color: 'pink', value: '7' })], b: [fcard('green', '3', { color: 'orange', value: '1' })], c: [fcard('red', '9', { color: 'purple', value: '1' })] },
+    top: fcard('red', '5', { color: 'pink', value: '2' }),
+  });
+  g.side = 'light';
+  assert.throws(() => g.play('a', flip.id), err => err.code === 'pickColor' && err.params.flip === true && err.params.colors.includes('orange'));
+  assert.equal(g.hands.a.length, 2, 'nothing changed');
+  g.play('a', flip.id, { flipColor: 'orange' });
+  assert.equal(g.color, 'orange');
+});
+
+test('Skip Everyone gives the same player another turn', () => {
+  const sa = fcard('teal', 'skipAll', { color: 'red', value: '1' });
+  const g = rig({
+    settings: { flip: true },
+    hands: { a: [sa, fcard('teal', '2', { color: 'red', value: '2' })], b: [fcard('pink', '3', { color: 'red', value: '3' })], c: [fcard('pink', '4', { color: 'red', value: '4' })] },
+    top: fcard('teal', '5', { color: 'red', value: '5' }),
+  });
+  g.side = 'dark';
+  g.play('a', sa.id);
+  assert.equal(g.current, 'a');
+});
+
+test('Wild Draw Color makes the next player draw until that color turns up', () => {
+  const wdc = fcard('wild', 'wildColor', { color: 'red', value: '1' });
+  const g = rig({
+    settings: { flip: true, challenge: false },
+    hands: { a: [wdc, fcard('teal', '2', { color: 'red', value: '2' })], b: [fcard('pink', '3', { color: 'red', value: '3' })], c: [fcard('pink', '4', { color: 'red', value: '4' })] },
+    top: fcard('teal', '5', { color: 'red', value: '5' }),
+  });
+  g.side = 'dark';
+  g.drawPile = [fcard('purple', '9', { color: 'red', value: '6' }), fcard('orange', '1', { color: 'red', value: '7' }), fcard('pink', '8', { color: 'red', value: '8' }), fcard('teal', '7', { color: 'red', value: '9' })];
+  g.play('a', wdc.id, { color: 'orange' });
+  assert.equal(g.hands.b.length, 1 + 3, 'teal, pink, then the orange');
+  assert.equal(g.hands.b.at(-1).color, 'orange');
+  assert.equal(g.current, 'c');
+});
+
+test('Wild Draw Color cannot be challenged unless that rule is on', () => {
+  const wdc = fcard('wild', 'wildColor', { color: 'red', value: '1' });
+  const g = rig({
+    settings: { flip: true },
+    hands: { a: [wdc, fcard('pink', '2', { color: 'red', value: '2' })], b: [fcard('pink', '3', { color: 'red', value: '3' })], c: [fcard('pink', '4', { color: 'red', value: '4' })] },
+    top: fcard('teal', '5', { color: 'red', value: '5' }),
+  });
+  g.side = 'dark';
+  g.drawPile = [fcard('pink', '9', { color: 'red', value: '6' }), fcard('orange', '8', { color: 'red', value: '8' })];
+  g.play('a', wdc.id, { color: 'orange' });
+  assert.equal(g.challenge, null);
+  assert.equal(g.hands.b.length, 1 + 1, 'drew the orange right away');
+  assert.equal(g.current, 'c');
+});
+
+test('a challenged Wild Draw Color: an innocent player makes the challenger draw until the color, plus 2', () => {
+  const wdc = fcard('wild', 'wildColor', { color: 'red', value: '1' });
+  const g = rig({
+    settings: { flip: true, challengeColor: true },
+    hands: { a: [wdc, fcard('pink', '2', { color: 'red', value: '2' })], b: [fcard('pink', '3', { color: 'red', value: '3' })], c: [fcard('pink', '4', { color: 'red', value: '4' })] },
+    top: fcard('teal', '5', { color: 'red', value: '5' }),
+  });
+  g.side = 'dark';
+  g.drawPile = [fcard('pink', '9', { color: 'red', value: '6' }), fcard('pink', '1', { color: 'red', value: '7' }), fcard('orange', '8', { color: 'red', value: '8' }), fcard('teal', '7', { color: 'red', value: '9' })];
+  g.play('a', wdc.id, { color: 'orange' });
+  assert.ok(g.challenge);
+  g.challengeDraw4('b');
+  assert.equal(g.hands.b.length, 1 + 2 + 2, 'teal, orange, then 2 more');
+  assert.equal(g.current, 'c');
+});
+
+test('Draw One, and the Flip scoring', () => {
+  const d1 = fcard('red', 'draw1', { color: 'pink', value: 'draw5' });
+  const g = rig({
+    settings: { flip: true },
+    hands: { a: [d1, fcard('red', '2', { color: 'pink', value: '2' })], b: [fcard('blue', '3', { color: 'teal', value: '3' })], c: [fcard('blue', '4', { color: 'teal', value: '4' })] },
+    top: fcard('red', '5', { color: 'pink', value: '5' }),
+  });
+  g.side = 'light';
+  const before = g.hands.b.length;
+  g.play('a', d1.id);
+  assert.equal(g.hands.b.length, before + 1);
+  assert.equal(g.current, 'c');
+  assert.equal(cardPoints({ color: 'wild', value: 'wild' }, true), 40);
+  assert.equal(cardPoints({ color: 'wild', value: 'wild' }), 50);
+  assert.equal(cardPoints({ color: 'teal', value: 'skipAll' }, true), 30);
+  assert.equal(cardPoints({ color: 'wild', value: 'wildColor' }, true), 60);
+});
+
+test('randomized Flip bot games keep every invariant', () => {
+  const ruleSets = [{}, { stacking: true }, { multiPlay: false, lastStanding: false }, { sevenZero: true, jumpIn: true, drawUntilPlayable: true }];
+  let flips = 0;
+  for (let seed = 1; seed <= 150; seed++) {
+    const rng = seeded(seed * 7);
+    const n = 2 + (seed % 7);
+    const ids = Array.from({ length: n }, (_, i) => `p${i}`);
+    const g = new UnoGame(ids, { ...ruleSets[seed % ruleSets.length], flip: true, targetScore: seed % 2 ? 0 : 300 }, { rng });
+    let steps = 0;
+    while (g.phase !== 'gameOver') {
+      assert.ok(++steps < 50000, `flip game ${seed} did not finish`);
+      if (g.phase === 'roundOver') { g.nextRound(); continue; }
+      const side = g.side;
+      applyMove(g, g.current, chooseMove(g, g.current, rng));
+      if (g.side !== side) flips++;
+      const all = [...g.drawPile, ...g.discard, ...Object.values(g.hands).flat()];
+      assert.equal(all.length, 112, `card count broke in flip game ${seed}`);
+      assert.equal(new Set(all.map(c => c.id)).size, 112);
+      if (g.phase === 'play') {
+        assert.ok(g.colors.includes(g.color), `bad color ${g.color} on the ${g.side} side`);
+        assert.ok(all.every(c => [...g.colors, 'wild'].includes(c.color)), 'a card shows the wrong side');
+      }
+    }
+  }
+  assert.ok(flips > 50);
+});
+
+// ---------- points ----------
+
+test('last standing: place points spread from 100 to 0 whatever the table size', () => {
+  const ids = Array.from({ length: 8 }, (_, i) => `p${i}`);
+  const hands = Object.fromEntries(ids.map(id => [id, [card('red', '5')]]));
+  hands.p7.push(card('blue', '1'));
+  const g = rig({ players: ids, settings: { lastStanding: true, targetScore: 0, bonuses: false }, hands, top: card('red', '3') });
+  for (let i = 0; i < 7; i++) g.play(g.current, g.hands[g.current][0].id);
+  assert.equal(g.phase, 'gameOver');
+  assert.deepEqual(ids.map(id => g.scores[id]), [100, 85, 70, 55, 45, 30, 15, 0]);
+});
+
+test('bonus points: combos, going out on an action card, catching, and win streaks', () => {
+  const fives = [card('red', '5'), card('blue', '5'), card('green', '5')];
+  const g = rig({ settings: { lastStanding: false, targetScore: 0, multiPlay: true }, hands: { a: [...fives, card('red', 'skip')], b: [card('blue', '9'), card('blue', '8')], c: [card('blue', '7'), card('blue', '6')] }, top: card('red', '3') });
+  g.play('a', fives.map(c => c.id));
+  assert.deepEqual(g.bonuses.a, [{ kind: 'combo', points: 15 }]);
+  assert.ok(g.vulnerable.has('a'));
+  g.catchUno('b', 'a');
+  assert.deepEqual(g.bonuses.b, [{ kind: 'catch', points: 10 }]);
+  assert.equal(g.scores.b, 10);
+
+  const s = rig({ settings: { lastStanding: false, targetScore: 1000 }, hands: { a: [card('red', 'skip')], b: [card('blue', '9')], c: [card('blue', '7')] }, top: card('red', '3') });
+  s.unoSafe.add('a');
+  s.play('a', s.hands.a[0].id);
+  assert.deepEqual(s.roundResult.bonuses.a, [{ kind: 'finish', points: 20 }]);
+  assert.equal(s.scores.a, 11 + 20, '(9 + 7) / √2, plus going out on a Skip');
+  // win the next round too: streak bonus
+  s.nextRound();
+  s.hands.a = [card('wild', 'wild')];
+  s.turn = s.players.indexOf('a');
+  s.pending = { count: 0, type: null };
+  s.drawn = null;
+  s.challenge = null;
+  s.unoSafe.add('a');
+  s.play('a', s.hands.a[0].id, { color: 'red' });
+  assert.ok(s.roundResult.bonuses.a.some(b => b.kind === 'streak' && b.points === 10));
+
+  const off = rig({ settings: { bonuses: false, multiPlay: true }, hands: { a: [...fives.map(c => ({ ...c, id: c.id + 5000 })), card('red', '1')], b: [card('blue', '9')], c: [card('blue', '7')] }, top: card('red', '3') });
+  off.play('a', off.hands.a.slice(0, 3).map(c => c.id));
+  assert.equal(off.scores.a, 0);
+  assert.equal(off.bonuses.a, undefined);
 });

@@ -1,6 +1,8 @@
 'use strict';
 
-// Zero-dependency LAN UNO server: static files + JSON API + Server-Sent Events.
+// Zero-dependency LAN game hub: static files + JSON API + Server-Sent Events.
+// Rooms, chat, voice setup, seats and reconnects live here; each game
+// (<id>/src/plugin.js) brings its rules engine, its moves and its bots' timing.
 // Run: node server.js [port] [--online]
 // --online also opens a public https link (Cloudflare quick tunnel) for friends elsewhere.
 
@@ -9,18 +11,25 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { UnoGame, GameError, DEFAULT_SETTINGS, sanitizeSettings } = require('./src/game');
-const { errorText, systemText } = require('./src/messages');
-const { chooseMove, applyMove } = require('./src/ai');
-const { startTunnel } = require('./src/tunnel');
+const { GameError, errorText, systemText } = require('./lib/messages');
+const { startTunnel } = require('./lib/tunnel');
 
-const PUBLIC_DIR = path.join(__dirname, 'public');
+const GAMES = Object.fromEntries([
+  require('./uno/src/plugin'),
+  require('./monopoly/src/plugin'),
+  require('./ludo/src/plugin'),
+].map(g => [g.id, g]));
+
+// URL prefix -> folder. The hub page is at /, each game's client at /<id>/.
+const STATIC = [
+  ['/shared/', path.join(__dirname, 'shared')],
+  ...Object.keys(GAMES).map(id => [`/${id}/`, path.join(__dirname, id, 'public')]),
+  ['/', path.join(__dirname, 'hub')],
+];
 const ARGS = process.argv.slice(2);
 const START_PORT = Number(ARGS.find(a => /^\d+$/.test(a)) || process.env.PORT || 3000);
 const ONLINE = ARGS.includes('--online');
 const MAX_ROOMS = 200;           // online, anyone with the link can create rooms
-const MAX_MEMBERS = 10;
-const AWAY_GRACE_MS = 10000;     // autopilot kicks in this long after someone drops
 const ROOM_IDLE_MS = 30 * 60e3;  // rooms with nobody connected are cleaned up
 const BOT_NAMES = ['Botty', 'Robo', 'Chip', 'Pixel', 'Byte', 'Nova', 'Sparky', 'Gizmo', 'Zed', 'Echo', 'Bolt', 'Widget'];
 const AVATAR_COLORS = ['#ff6b6b', '#ffd93d', '#6bcB77', '#4d96ff', '#c77dff', '#ff9f45', '#2ec4b6', '#f15bb5', '#9b5de5', '#00bbf9'];
@@ -70,11 +79,13 @@ function lanAddresses() {
 }
 
 class Room {
-  constructor(code) {
+  constructor(code, gameId = 'uno') {
+    if (!GAMES[gameId]) throw new GameError('unknownGame');
     this.code = code;
+    this.kind = GAMES[gameId];
     this.members = new Map();
     this.hostId = null;
-    this.settings = { ...DEFAULT_SETTINGS };
+    this.settings = { ...this.kind.defaults };
     this.game = null;
     this.chat = [];
     this.timers = [];
@@ -84,6 +95,7 @@ class Room {
     this.createdAt = Date.now();
   }
 
+  get maxMembers() { return this.kind.maxPlayers; }
   get humans() { return [...this.members.values()].filter(m => !m.isBot); }
   get anyoneConnected() { return this.humans.some(m => m.connected); }
 
@@ -108,6 +120,8 @@ class Room {
       waiting: Boolean(this.game && this.game.phase !== 'gameOver'),
       color: AVATAR_COLORS[this.colorIdx++ % AVATAR_COLORS.length],
       joinedAt: Date.now(),
+      voice: false,       // in the voice chat
+      voiceMuted: false,
     };
     this.members.set(m.id, m);
     if (!this.hostId && !isBot) this.hostId = m.id;
@@ -152,9 +166,11 @@ class Room {
   view(memberId) {
     const members = [...this.members.values()].map(m => ({
       id: m.id, name: m.name, isBot: m.isBot, connected: m.connected, waiting: m.waiting, color: m.color,
+      voice: m.voice, voiceMuted: m.voiceMuted,
     }));
     return {
       code: this.code,
+      gameType: this.kind.id,
       me: memberId,
       hostId: this.hostId,
       members,
@@ -191,7 +207,7 @@ class Room {
     }
   }
 
-  // Everything time-based (bot turns, autopilot, turn timer, UNO calls/catches) is
+  // Everything time-based (bot turns, autopilot, turn timers; the game says which) is
   // re-planned after each broadcast. Plans are keyed so re-planning never re-rolls dice.
   schedule() {
     for (const t of this.timers) clearTimeout(t);
@@ -207,41 +223,7 @@ class Room {
     };
     const g = this.game;
 
-    if (g && g.phase === 'play' && this.anyoneConnected) {
-      const cur = g.current;
-      const m = this.members.get(cur);
-      const key = `turn:${g.id}:${g.seq}`;
-      if (m && m.isBot) {
-        at(plan(key, () => Date.now() + 850 + Math.random() * 900), () => this.autoMove(cur));
-      } else if (m && !m.connected) {
-        at(plan(`${key}:away`, () => Math.max(Date.now() + 1200, (m.disconnectedAt || 0) + AWAY_GRACE_MS)), () => this.autoMove(cur, 'away'));
-      } else if (g.settings.turnTimer > 0) {
-        at(g.turnStartedAt + g.settings.turnTimer * 1000, () => this.autoMove(cur, 'timeout'));
-      }
-
-      const bots = g.players.map(id => this.members.get(id)).filter(b => b && b.isBot);
-      for (const [vid, vseq] of g.vulnerable) {
-        const vm = this.members.get(vid);
-        if (vm && vm.isBot) {
-          // bots usually pre-call UNO; when they forget they remember a bit later
-          at(plan(`unocall:${vid}:${vseq}`, () => Date.now() + 1500 + Math.random() * 2500), () => {
-            if (g.vulnerable.has(vid)) { g.callUno(vid); this.broadcast(); }
-          });
-        }
-        const catchers = bots.filter(b => b.id !== vid);
-        if (catchers.length) {
-          const when = plan(`catch:${vid}:${vseq}`, () => (Math.random() < 0.6 ? Date.now() + 500 + Math.random() * 1200 : null));
-          if (when) {
-            at(when, () => {
-              if (!g.vulnerable.has(vid)) return;
-              const by = catchers[Math.floor(Math.random() * catchers.length)];
-              g.catchUno(by.id, vid);
-              this.broadcast();
-            });
-          }
-        }
-      }
-    }
+    if (g && this.anyoneConnected) this.kind.schedule(this, { plan, at });
 
     // hand the crown over if the host has been gone a while
     const host = this.members.get(this.hostId);
@@ -260,22 +242,6 @@ class Room {
     this.plans = used;
   }
 
-  autoMove(pid, reason) {
-    const g = this.game;
-    if (!g || g.phase !== 'play' || g.current !== pid) return;
-    const m = this.members.get(pid);
-    const move = chooseMove(g, pid);
-    if (reason === 'timeout' && g.drawn === null) g.emit('timeout', { player: pid });
-    // bots remember most of the time; autopilot always covers for a human
-    const callUno = move.type === 'play' && g.hands[pid].length - [].concat(move.cardId).length === 1
-      && (!m || !m.isBot || Math.random() < 0.8);
-    // with unoLastCard the call only counts once the card is down
-    if (callUno && !g.settings.unoLastCard) g.callUno(pid);
-    applyMove(g, pid, move);
-    if (callUno && g.settings.unoLastCard && g.phase === 'play' && g.hands[pid]?.length === 1) g.callUno(pid);
-    this.broadcast();
-  }
-
   handleAction(m, body) {
     const g = this.game;
     const isHost = this.hostId === m.id;
@@ -286,11 +252,11 @@ class Room {
       case 'settings':
         needHost();
         if (g && g.phase !== 'gameOver') throw new GameError('rulesBetweenGames');
-        this.settings = sanitizeSettings(body.settings, this.settings);
+        this.settings = this.kind.sanitizeSettings(body.settings, this.settings);
         break;
       case 'addBot': {
         needHost();
-        if (this.members.size >= MAX_MEMBERS) throw new GameError('roomFull');
+        if (this.members.size >= this.maxMembers) throw new GameError('roomFull');
         const used = new Set([...this.members.values()].map(x => x.name));
         const name = BOT_NAMES.find(n => !used.has(n)) || 'Bot';
         const bot = this.addMember({ name, isBot: true });
@@ -310,11 +276,13 @@ class Room {
         needHost();
         if (g && g.phase !== 'gameOver') throw new GameError('gameRunning');
         const ids = [...this.members.keys()];
-        if (ids.length < 2) throw new GameError('needTwoBot');
+        if (ids.length < this.kind.minPlayers) throw new GameError('needTwoBot');
+        if (ids.length > this.kind.maxPlayers) throw new GameError('tooManyPlayers', { max: this.kind.maxPlayers });
         for (const x of this.members.values()) x.waiting = false;
-        this.game = new UnoGame(ids, this.settings);
+        this.game = this.kind.create(ids, this.settings);
         this.plans.clear();
-        this.system('gameOn', { target: this.settings.targetScore });
+        const { code, params } = this.kind.startMessage(this.settings);
+        this.system(code, params);
         break;
       }
       case 'nextRound': {
@@ -333,20 +301,23 @@ class Room {
         for (const x of this.members.values()) x.waiting = false;
         this.system('lobby');
         break;
-      case 'play':
-        needGame().play(m.id, [].concat(body.cardIds ?? body.cardId).slice(0, 20), { color: body.color, target: body.target, uno: Boolean(body.uno) });
-        break;
-      case 'draw': needGame().draw(m.id); break;
-      case 'pass': needGame().pass(m.id); break;
-      case 'challenge': needGame().challengeDraw4(m.id); break;
-      case 'uno':
-        if (!needGame().callUno(m.id)) return false;
-        break;
-      case 'catch': needGame().catchUno(m.id, body.target); break;
       case 'chat': {
         const text = String(body.text ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 240);
         if (!text) return false;
         this.pushChat({ from: m.id, name: m.name, color: m.color, text });
+        return false;
+      }
+      // Voice chat is peer to peer (WebRTC); the server only says who's in it and passes
+      // the connection setup messages (offers, answers, ICE candidates) between browsers.
+      case 'voice':
+        m.voice = Boolean(body.on);
+        m.voiceMuted = m.voice && Boolean(body.muted);
+        break;
+      case 'signal': {
+        const target = this.members.get(body.target);
+        if (!target || target.isBot || target.id === m.id) throw new GameError('noSuchPlayer');
+        if (!body.data || typeof body.data !== 'object') return false;
+        this.send(target.id, { type: 'signal', from: m.id, data: body.data });
         return false;
       }
       case 'react':
@@ -358,7 +329,8 @@ class Room {
         this.removeMember(m.id, 'left');
         break;
       default:
-        throw new GameError('unknownAction');
+        // everything else is a move in the game
+        return Boolean(this.kind.action(this, m, body));
     }
     return true;
   }
@@ -406,11 +378,19 @@ function findMember(code, token) {
   return member ? { room, member } : { room };
 }
 
-function serveStatic(req, res, pathname) {
-  let rel = decodeURIComponent(pathname);
-  if (rel === '/' || rel === '') rel = '/index.html';
-  const file = path.normalize(path.join(PUBLIC_DIR, rel));
-  if (!file.startsWith(PUBLIC_DIR + path.sep)) { res.writeHead(403); res.end(); return; }
+function serveStatic(req, res, url) {
+  let pathname;
+  try { pathname = decodeURIComponent(url.pathname); } catch { res.writeHead(400); res.end(); return; }
+  // /uno -> /uno/ so the page's relative links resolve
+  if (GAMES[pathname.slice(1)]) return redirect(res, `${pathname}/${url.search}`);
+  // invite links (/?room=CODE) go straight to the room's game
+  const code = (url.searchParams.get('room') || '').toUpperCase();
+  if (pathname === '/' && rooms.has(code)) return redirect(res, `/${rooms.get(code).kind.id}/?room=${code}`);
+  const [prefix, dir] = STATIC.find(([p]) => pathname.startsWith(p));
+  let rel = pathname.slice(prefix.length);
+  if (rel === '' || rel.endsWith('/')) rel += 'index.html';
+  const file = path.normalize(path.join(dir, rel));
+  if (!file.startsWith(dir + path.sep)) { res.writeHead(403); res.end(); return; }
   fs.readFile(file, (err, data) => {
     if (err) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -423,6 +403,11 @@ function serveStatic(req, res, pathname) {
     });
     res.end(data);
   });
+}
+
+function redirect(res, location) {
+  res.writeHead(302, { Location: location, 'Cache-Control': 'no-store' });
+  res.end();
 }
 
 function openStream(req, res, url) {
@@ -459,6 +444,7 @@ function detachClient(room, member, client) {
   if (member.clients.size || !room.members.has(member.id)) return;
   member.connected = false;
   member.disconnectedAt = Date.now();
+  member.voice = false; // a reloaded page has to turn its mic back on
   room.broadcast();
 }
 
@@ -544,11 +530,22 @@ async function handleApi(req, res, url) {
     if (route === 'stream') return openStream(req, res, url);
     if (route === 'poll') return openPoll(req, res, url);
     if (route === 'info') return json(res, 200, { addresses: lanAddresses(), port: server.address().port, online: ONLINE, publicUrl });
+    if (route === 'games') {
+      const list = Object.values(GAMES).map(g => ({ id: g.id, name: g.name, minPlayers: g.minPlayers, maxPlayers: g.maxPlayers }));
+      return json(res, 200, { games: list });
+    }
+    if (route === 'room') {
+      const code = String(url.searchParams.get('code') || '').toUpperCase();
+      const room = rooms.get(code);
+      return room ? json(res, 200, { code, game: room.kind.id }) : fail(res, 404, 'roomNotFound', { code });
+    }
     if (route === 'rooms') {
+      const only = url.searchParams.get('game');
       const list = [...rooms.values()]
-        .filter(r => r.anyoneConnected)
+        .filter(r => r.anyoneConnected && (!only || r.kind.id === only))
         .map(r => ({
           code: r.code,
+          game: r.kind.id,
           host: r.members.get(r.hostId)?.name || '?',
           players: r.members.size,
           status: r.game ? (r.game.phase === 'gameOver' ? 'finished' : 'playing') : 'lobby',
@@ -563,25 +560,29 @@ async function handleApi(req, res, url) {
 
   if (route === 'create') {
     if (rooms.size >= MAX_ROOMS) return fail(res, 503, 'tooManyRooms');
-    const room = new Room(newRoomCode());
+    const gameId = body.game || 'uno';
+    if (!GAMES[gameId]) return fail(res, 400, 'unknownGame');
+    const room = new Room(newRoomCode(), gameId);
     rooms.set(room.code, room);
     const m = room.addMember({ name: cleanName(body.name) });
     room.system('created', { name: m.name });
-    console.log(`Room ${room.code} created by ${m.name}`);
-    return json(res, 200, { code: room.code, id: m.id, token: m.token });
+    console.log(`Room ${room.code} (${room.kind.name}) created by ${m.name}`);
+    return json(res, 200, { code: room.code, game: gameId, id: m.id, token: m.token });
   }
 
   if (route === 'join') {
     const code = String(body.code || '').toUpperCase().trim();
     const room = rooms.get(code);
     if (!room) return fail(res, 404, 'roomNotFound', { code });
+    // a code typed into the wrong game's page: the client moves over to the right one
+    if (body.game && body.game !== room.kind.id) return fail(res, 409, 'wrongGame', { game: room.kind.id });
     const existing = body.token && [...room.members.values()].find(m => m.token === body.token);
-    if (existing) return json(res, 200, { code, id: existing.id, token: existing.token });
-    if (room.members.size >= MAX_MEMBERS) return fail(res, 409, 'roomFullMax');
+    if (existing) return json(res, 200, { code, game: room.kind.id, id: existing.id, token: existing.token });
+    if (room.members.size >= room.maxMembers) return fail(res, 409, 'roomFullMax', { max: room.maxMembers });
     const m = room.addMember({ name: cleanName(body.name) });
     room.system('joined', { name: m.name, waiting: m.waiting });
     room.broadcast();
-    return json(res, 200, { code, id: m.id, token: m.token });
+    return json(res, 200, { code, game: room.kind.id, id: m.id, token: m.token });
   }
 
   if (route === 'check') {
@@ -604,7 +605,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
     if (url.pathname.startsWith('/api/')) await handleApi(req, res, url);
-    else if (req.method === 'GET' || req.method === 'HEAD') serveStatic(req, res, url.pathname);
+    else if (req.method === 'GET' || req.method === 'HEAD') serveStatic(req, res, url);
     else fail(res, 405, 'methodNotAllowed');
   } catch (err) {
     if (err instanceof GameError) return fail(res, 400, err.code, err.params);
@@ -644,7 +645,7 @@ function listen(port, attemptsLeft = 10) {
   server.listen(port, '0.0.0.0', () => {
     const p = server.address().port;
     const line = '='.repeat(56);
-    console.log(`\n${line}\n  UNO server is running!\n${line}`);
+    console.log(`\n${line}\n  Game Night is running! (${Object.values(GAMES).map(g => g.name).join(', ')})\n${line}`);
     console.log(`  On this PC:        http://localhost:${p}`);
     const addrs = lanAddresses();
     if (!addrs.length) console.log('  (no network found: connect to Wi-Fi or turn on Mobile Hotspot)');
@@ -671,4 +672,4 @@ function goOnline(port) {
 
 if (require.main === module) listen(START_PORT);
 
-module.exports = { server, rooms, Room, listen };
+module.exports = { server, rooms, Room, listen, GAMES };

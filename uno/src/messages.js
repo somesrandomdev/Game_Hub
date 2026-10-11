@@ -1,16 +1,12 @@
 'use strict';
 
-// Server-side messages are sent as { code, params } so each client can show them in
-// its own language. The English text here is the fallback (and what tests/logs see).
+// UNO's own server messages (the platform's are in lib/messages.js).
 
-const ERRORS = {
-  needTwoPlayers: 'Need at least 2 players',
-  needTwoBot: 'Need at least 2 players — add a bot!',
+const { GameError, addMessages, PLATFORM_ERRORS, PLATFORM_SYSTEM } = require('../../lib/messages');
+
+const UNO_ERRORS = {
   roundIsOver: 'The round is over',
-  roundNotOver: 'The round is not over',
   waitRoundEnd: 'Wait for the round to end',
-  notInGame: 'You are not in this game',
-  notYourTurn: 'Not your turn',
   noCard: 'You do not have that card',
   onlyDrawn: 'You can only play the card you drew (or pass)',
   stackOrTake: p => `Stack a draw card or take ${p.count}`,
@@ -26,54 +22,16 @@ const ERRORS = {
   sameValueOnly: 'Cards played together must have the same number or symbol',
   catchSelf: 'You cannot catch yourself — call UNO!',
   tooLate: 'Too late!',
-  hostOnly: 'Only the host can do that',
-  noGame: 'No game in progress',
-  rulesBetweenGames: 'Change rules between games',
-  roomFull: 'The room is full',
-  roomFullMax: 'That room is full (10 players max)',
-  tooManyRooms: 'The server has too many rooms open right now, try again later',
-  noSuchPlayer: 'No such player',
-  useLeave: 'Use Leave instead',
-  gameRunning: 'A game is already running',
-  unknownReaction: 'Unknown reaction',
-  unknownAction: 'Unknown action',
-  requestTooLarge: 'Request too large',
-  badJson: 'Bad JSON',
-  roomNotFound: p => `No room called ${p.code || '(empty)'}`,
-  memberNotFound: 'Room or player not found',
-  sessionExpired: 'Session expired',
-  notFound: 'Not found',
-  methodNotAllowed: 'Method not allowed',
-  serverError: 'Server error',
 };
 
-const SYSTEM = {
-  created: p => `${p.name} created the room`,
-  joined: p => `${p.name} joined${p.waiting ? ' — they will be dealt in next round' : ''}`,
-  botJoined: p => `${p.name} 🤖 joined${p.waiting ? ' (next round)' : ''}`,
-  removed: p => `${p.name} was removed`,
-  left: p => `${p.name} left`,
-  connected: p => `${p.name} connected`,
-  newHost: p => `${p.name} is now the host`,
+const UNO_SYSTEM = {
   gameOn: p => (p.target ? `Game on! First to ${p.target} points.` : 'Game on! One round decides it.'),
-  lobby: () => 'Back to the lobby',
 };
 
-function render(table, code, params = {}) {
-  const m = table[code];
-  if (m === undefined) return code;
-  return typeof m === 'function' ? m(params) : m;
-}
+addMessages({ errors: UNO_ERRORS, system: UNO_SYSTEM });
 
-class GameError extends Error {
-  constructor(code, params = {}) {
-    super(render(ERRORS, code, params));
-    this.code = code;
-    this.params = params;
-  }
-}
+// everything an UNO client can be sent
+const ERRORS = { ...PLATFORM_ERRORS, ...UNO_ERRORS };
+const SYSTEM = { ...PLATFORM_SYSTEM, ...UNO_SYSTEM };
 
-const errorText = (code, params) => render(ERRORS, code, params);
-const systemText = (code, params) => render(SYSTEM, code, params);
-
-module.exports = { GameError, errorText, systemText, ERRORS, SYSTEM };
+module.exports = { GameError, ERRORS, SYSTEM };

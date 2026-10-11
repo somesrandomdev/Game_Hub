@@ -1,5 +1,5 @@
 @echo off
-title UNO Night server (online)
+title Game Night server (online)
 cd /d "%~dp0"
 where node >nul 2>nul
 if errorlevel 1 (
@@ -7,7 +7,7 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo Starting UNO server with an online link... (close this window to stop it)
+echo Starting Game Night with an online link... (close this window to stop it)
 start "" http://localhost:3000
 node server.js 3000 --online
 pause

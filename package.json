@@ -1,0 +1,15 @@
+{
+  "name": "game-night",
+  "version": "1.0.0",
+  "description": "LAN multiplayer board and card games in the browser (UNO, Monopoly, Ludo). Zero dependencies, works offline on Wi-Fi or a hotspot.",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/server.test.js uno/test/game.test.js uno/test/i18n.test.js monopoly/test/game.test.js monopoly/test/i18n.test.js ludo/test/game.test.js ludo/test/i18n.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

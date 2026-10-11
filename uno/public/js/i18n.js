@@ -4,9 +4,9 @@
 
 const s = n => (n === 1 ? '' : 's');
 
-const COLOR_EN = { red: 'red', yellow: 'yellow', green: 'green', blue: 'blue' };
-const COLOR_FR = { red: 'rouge', yellow: 'jaune', green: 'vert', blue: 'bleu' };
-const COLOR_FR_F = { red: 'rouge', yellow: 'jaune', green: 'verte', blue: 'bleue' };
+const COLOR_EN = { red: 'red', yellow: 'yellow', green: 'green', blue: 'blue', pink: 'pink', teal: 'teal', orange: 'orange', purple: 'purple' };
+const COLOR_FR = { red: 'rouge', yellow: 'jaune', green: 'vert', blue: 'bleu', pink: 'rose', teal: 'turquoise', orange: 'orange', purple: 'violet' };
+const COLOR_FR_F = { red: 'rouge', yellow: 'jaune', green: 'verte', blue: 'bleue', pink: 'rose', teal: 'turquoise', orange: 'orange', purple: 'violette' };
 const cap = str => str.charAt(0).toUpperCase() + str.slice(1);
 const ordFr = n => (Number(n) === 1 ? '1er' : `${n}e`);
 const ordEn = n => `${n}${['th', 'st', 'nd', 'rd'][(n % 100 > 10 && n % 100 < 14) || n % 10 > 3 ? 0 : n % 10]}`;
@@ -23,6 +23,7 @@ const en = {
   'home.friendsFrom': 'Friends join from',
   'home.lookingUp': 'Looking up addresses…',
   'home.howTo': 'How to play & connect',
+  'home.allGames': '← All games',
   'top.leave': '← Leave',
   'top.room': 'ROOM',
   'title.rules': 'Rules',
@@ -111,10 +112,22 @@ const en = {
   'set.sevenZero.hint': '7 swaps hands, 0 rotates all hands',
   'set.jumpIn': 'Jump-in',
   'set.jumpIn.hint': 'Play an identical card out of turn',
+  'set.flip': 'UNO Flip',
+  'set.flip.hint': 'Two-sided cards: a Flip card turns everything over to the nasty dark side',
+  'set.challengeColor': 'Challenge Draw Color',
+  'set.challengeColor.hint': 'A Wild Draw Color can be challenged like a +4',
   'set.multiPlay': 'Multi-card play',
   'set.multiPlay.hint': 'Play several cards with the same number or symbol at once, any colors',
   'set.lastStanding': 'Last one standing',
   'set.lastStanding.hint': 'Going out doesn\'t end the round: the last player holding cards loses',
+  'set.bonuses': 'Bonus points',
+  'set.bonuses.hint': 'Catch someone +10, combos of 3+ cards, go out on an action card +20, win streaks',
+  'bonus.catch': 'Caught them!',
+  'bonus.combo': 'Combo',
+  'bonus.finish': 'Action finish',
+  'bonus.streak': 'Win streak',
+  'toast.bonus': '⭐ {label}: +{pts} pts',
+  'log.bonus': p => `${p.who} ⭐ ${p.label} +${p.pts}`,
   'set.unoLastCard': 'UNO on the last card',
   'set.unoLastCard.hint': 'The UNO! button only shows once you hold a single card',
 
@@ -164,6 +177,12 @@ const en = {
   'lobby.waiting': 'Waiting for {name} to start…',
   'theHost': 'the host',
   'confirm.sure': 'Sure?',
+  'confirm.draw': 'Draw anyway?',
+  'rotate.title': 'Turn your phone sideways',
+  'rotate.text': 'The table gets bigger and your cards are easier to play.',
+  'rotate.lock': '🔄 Play sideways',
+  'rotate.skip': 'Keep it upright',
+  'rotate.manual': 'Turn your phone sideways (and check that auto-rotate is on)',
   'confirm.leave': 'Tap again to leave',
   'confirm.end': 'Tap again: end for everyone',
 
@@ -179,6 +198,7 @@ const en = {
   'btn.uno': 'UNO!',
   'btn.unoDone': 'UNO ✓',
   'btn.unoArmed': 'UNO ready',
+  'btn.takeUntil': 'Draw until {color}',
   'btn.accept': 'Accept +{n}',
   'btn.take': 'Take +{n}',
   'btn.draw': 'Draw',
@@ -191,7 +211,7 @@ const en = {
   'status.gameOver': 'Game over!',
   'status.roundOver': 'Round over!',
   'status.spectating': "👀 Spectating · {name}'s turn",
-  'status.challenge': 'Wild Draw Four! Accept or challenge?',
+  'status.challenge': '{card}! Accept or challenge?',
   'status.stack': 'Stack a draw card or take {n}!',
   'status.drawnPass': 'Play the card you drew, or pass',
   'status.drawnForced': 'You must play the card you drew',
@@ -206,6 +226,7 @@ const en = {
   // ---------- events ----------
   'ev.skipped': '⊘ Skipped',
   'ev.reverse': '⇄ Reverse!',
+  'ev.flip': 'FLIP!',
   'ev.caught': 'Caught! 🚨',
   'ev.jumpIn': 'Jump-in! ⚡',
   'ev.iWin': 'I win! 🎉',
@@ -230,6 +251,11 @@ const en = {
   'log.draw': p => `${p.who} drew ${p.n} card${s(p.n)}${p.reason}`,
   'log.reason.draw2': ' (+2)',
   'log.reason.wild4': ' (+4)',
+  'log.reason.draw1': ' (+1)',
+  'log.reason.draw5': ' (+5)',
+  'log.reason.wild2': ' (+2)',
+  'log.reason.wildColor': ' (draw color)',
+  'log.flip': p => `<b>Flip!</b> ${p.dark ? 'Dark' : 'Light'} side up, ${p.color}`,
   'log.reason.caught': ' (forgot UNO)',
   'log.reason.challenge': ' (challenge)',
   'log.pass': '{who} passed',
@@ -254,6 +280,7 @@ const en = {
   'reason.onlyDrawn': 'You can only play the card you just drew',
   'reason.stack': 'Stack a draw card or take {n}',
   'reason.take': 'Take the {n} cards',
+  'reason.takeUntil': 'Draw until you get a {color} card',
   'reason.noMatch': "{card} doesn't match: play {color} or a {value}",
 
   // ---------- pickers ----------
@@ -290,17 +317,45 @@ const en = {
   'color.yellow': 'yellow',
   'color.green': 'green',
   'color.blue': 'blue',
+  'color.pink': 'pink',
+  'color.teal': 'teal',
+  'color.orange': 'orange',
+  'color.purple': 'purple',
   'value.skip': 'Skip',
   'value.reverse': 'Reverse',
   'value.draw2': 'Draw Two',
   'value.wild': 'Wild',
   'value.wild4': 'Wild Draw Four',
+  'value.draw1': 'Draw One',
+  'value.draw5': 'Draw Five',
+  'value.wild2': 'Wild Draw Two',
+  'value.wildColor': 'Wild Draw Color',
+  'value.skipAll': 'Skip Everyone',
+  'value.flip': 'Flip',
   cardName: ({ color, value }) => {
-    if (value === 'wild') return 'Wild';
-    if (value === 'wild4') return 'Wild Draw Four';
-    const v = { skip: 'Skip', reverse: 'Reverse', draw2: 'Draw Two' }[value] || value;
+    const wild = { wild: 'Wild', wild4: 'Wild Draw Four', wild2: 'Wild Draw Two', wildColor: 'Wild Draw Color' }[value];
+    if (wild) return wild;
+    const v = { skip: 'Skip', reverse: 'Reverse', draw2: 'Draw Two', draw1: 'Draw One', draw5: 'Draw Five', skipAll: 'Skip Everyone', flip: 'Flip' }[value] || value;
     return `${cap(COLOR_EN[color])} ${v}`;
   },
+
+  // ---------- UNO Flip ----------
+  'side.light': '☀️ Light side',
+  'side.dark': '🌑 Dark side',
+  'flip.backsTitle': 'The other side of their cards',
+  'flip.backsOf': "{name}'s cards, seen from your side",
+  'modal.pickColorFlip': 'A wild turned up: pick its color',
+
+  // ---------- voice chat ----------
+  'voice.join': 'Join the voice chat',
+  'voice.leave': 'Leave the voice chat',
+  'voice.mute': 'Mute your mic (V)',
+  'voice.unmute': 'Unmute your mic (V)',
+  'voice.onTag': 'In the voice chat',
+  'voice.mutedTag': 'In the voice chat (muted)',
+  'voice.needHttps': 'The mic only works on the secure online link (https://) or on the server PC: you can listen, not talk',
+  'voice.noMic': 'No microphone access: you can listen, not talk',
+  'voice.unsupported': 'This browser does not support voice chat',
 
   // ---------- server errors (English text comes from the server) ----------
 
@@ -325,7 +380,7 @@ const en = {
       <li>Can't connect? Run <code>allow-firewall.bat</code> once on the server PC, or click "Allow" on the Windows Firewall popup.</li>
     </ol>
     <h3>🃏 Basics</h3>
-    <p>Match the top card by <b>color</b> or <b>number/symbol</b>, or play a <b>Wild</b>. Can't (or don't want to)? Draw a card. If it's playable you may play it right away. First to empty their hand wins the round and scores points for every card left in the other players' hands (numbers = face value, action cards = 20, wilds = 50).</p>
+    <p>Match the top card by <b>color</b> or <b>number/symbol</b>, or play a <b>Wild</b>. Can't (or don't want to)? Draw a card. If it's playable you may play it right away. First to empty their hand wins the round and scores the cards left in the other players' hands, divided by the square root of the number of opponents (numbers = face value, action cards = 20, wilds = 50), so a game lasts about as long with 3 players as with 10.</p>
     <h3>⚡ Action cards</h3>
     <ul>
       <li><b>Skip</b>: the next player loses their turn.</li>
@@ -334,12 +389,29 @@ const en = {
       <li><b>Wild</b>: choose the next color.</li>
       <li><b>Wild Draw Four</b>: choose the color, the next player draws 4 and loses their turn. It's only <i>legal</i> if you have no card of the current color. The victim may <b>challenge</b>: if you bluffed, you draw 4; if you were honest, they draw 6.</li>
     </ul>
+    <h3>⭐ Bonus points (on by default)</h3>
+    <ul>
+      <li>🚨 Catch someone who forgot UNO: <b>+10</b></li>
+      <li>⚡ Play 3 or more cards at once: <b>+5 per card</b></li>
+      <li>🎯 Go out on an action card or a wild: <b>+20</b></li>
+      <li>🔥 Win rounds in a row: <b>+10</b>, <b>+20</b>, then <b>+30</b> for each win after that</li>
+    </ul>
     <h3>📣 UNO!</h3>
     <p>Hit <b>UNO!</b> when you're down to 2 cards (before playing) or right after you drop to 1 (with the <b>UNO on the last card</b> rule: only once you're down to 1). If you forget, anyone can hit <b>Catch!</b> on you before the next player acts, and you draw a penalty.</p>
+    <h3>🌗 UNO Flip (host picks it in the lobby)</h3>
+    <p>Every card has a <b>light side</b> and a <b>dark side</b>. You play the light side first. You see the side of your cards that's in play, and everyone else sees their other side, so watch what your opponents are holding! Tap a player to see their cards up close.</p>
+    <ul>
+      <li><b>Flip</b>: every card turns over: hands, deck and discard pile. If a wild turns up on top, you pick its color.</li>
+      <li>☀️ <b>Draw One</b>: the next player draws 1 and loses their turn. <b>Wild Draw Two</b>: choose the color, the next player draws 2 and loses their turn (can be challenged like a +4).</li>
+      <li>🌑 <b>Draw Five</b>: the next player draws 5 and loses their turn. <b>Skip Everyone</b>: you play again. <b>Wild Draw Color</b>: choose a color, the next player draws until they get that color and loses their turn. It can't be challenged, unless the host turns on <b>Challenge Draw Color</b>.</li>
+      <li>Scoring: Draw One 10, Draw Five / Reverse / Skip / Flip 20, Skip Everyone 30, Wild 40, Wild Draw Two 50, Wild Draw Color 60.</li>
+    </ul>
+    <h3>🎧 Voice chat</h3>
+    <p>Hit <b>🎧</b> to talk with the table, and <b>🎙️</b> (or <b>V</b>) to mute. The mic needs the secure <b>online link</b> (https://) or the server PC itself; on a plain Wi-Fi address you can still listen. Whoever is talking lights up green.</p>
     <h3>🏠 House rules (host picks in the lobby)</h3>
     <ul>
       <li><b>Multi-card play</b>: play several cards with the same number or symbol in one go, whatever their colors (e.g. four 1s). Only the first has to match; the last one sets the color. Action cards add up: two +2s make +4, two Skips skip two players.</li>
-      <li><b>Last one standing</b>: emptying your hand doesn't end the round, you just sit out. The round ends when only one player still has cards, and they score 0. Everyone else scores 50 points for each player still holding cards when they went out.</li>
+      <li><b>Last one standing</b>: emptying your hand doesn't end the round, you just sit out. The round ends when only one player still has cards, and they score 0. Points go by place: 100 for the first one out, down to 0 for the last (with 5 players: 100, 75, 50, 25, 0).</li>
       <li><b>Stacking</b>: answer a +2 with a +2 or +4, or a +4 with a +4. The penalty grows until someone can't stack.</li>
       <li><b>Draw until playable</b>: keep drawing until you get a card you can play.</li>
       <li><b>Forced play</b>: if the drawn card is playable, you must play it.</li>
@@ -368,6 +440,7 @@ const fr = {
   'home.friendsFrom': 'Tes amis se connectent via',
   'home.lookingUp': 'Recherche des adresses…',
   'home.howTo': 'Règles et connexion',
+  'home.allGames': '← Tous les jeux',
   'top.leave': '← Quitter',
   'top.room': 'SALLE',
   'title.rules': 'Règles',
@@ -456,10 +529,22 @@ const fr = {
   'set.sevenZero.hint': 'Le 7 échange deux mains, le 0 fait tourner toutes les mains',
   'set.jumpIn': 'Interception',
   'set.jumpIn.hint': 'Joue une carte identique même hors de ton tour',
+  'set.flip': 'UNO Flip',
+  'set.flip.hint': 'Cartes à deux faces : une carte Flip retourne tout vers le redoutable côté obscur',
+  'set.challengeColor': 'Contester la Pioche Couleur',
+  'set.challengeColor.hint': 'Le Joker Pioche Couleur peut être contesté comme un +4',
   'set.multiPlay': 'Pose multiple',
   'set.multiPlay.hint': 'Pose d\'un coup plusieurs cartes du même chiffre ou symbole, toutes couleurs',
   'set.lastStanding': 'Dernier survivant',
   'set.lastStanding.hint': 'Vider sa main ne finit pas la manche : le dernier à avoir des cartes perd',
+  'set.bonuses': 'Points bonus',
+  'set.bonuses.hint': 'Contre-UNO +10, combos de 3 cartes ou plus, finir sur une carte action +20, séries de victoires',
+  'bonus.catch': 'Contre-UNO réussi',
+  'bonus.combo': 'Combo',
+  'bonus.finish': 'Final en action',
+  'bonus.streak': 'Série de victoires',
+  'toast.bonus': '⭐ {label} : +{pts} pts',
+  'log.bonus': p => `${p.who} ⭐ ${p.label} +${p.pts}`,
   'set.unoLastCard': 'UNO à la dernière carte',
   'set.unoLastCard.hint': "Le bouton UNO n'apparaît que quand il te reste une seule carte",
 
@@ -509,6 +594,12 @@ const fr = {
   'lobby.waiting': 'En attente que {name} lance la partie…',
   'theHost': 'l\'hôte',
   'confirm.sure': 'Sûr ?',
+  'confirm.draw': 'Piocher quand même ?',
+  'rotate.title': 'Tourne ton téléphone',
+  'rotate.text': 'La table est plus grande et tes cartes plus faciles à jouer.',
+  'rotate.lock': '🔄 Jouer en paysage',
+  'rotate.skip': 'Rester en portrait',
+  'rotate.manual': 'Tourne ton téléphone (et vérifie que la rotation auto est activée)',
   'confirm.leave': 'Appuie encore pour quitter',
   'confirm.end': 'Encore une fois : terminer pour tous',
 
@@ -524,6 +615,7 @@ const fr = {
   'btn.uno': 'UNO !',
   'btn.unoDone': 'UNO ✓',
   'btn.unoArmed': 'UNO prêt',
+  'btn.takeUntil': 'Piocher jusqu\'au {color}',
   'btn.accept': 'Accepter +{n}',
   'btn.take': 'Prendre +{n}',
   'btn.draw': 'Piocher',
@@ -536,7 +628,7 @@ const fr = {
   'status.gameOver': 'Partie terminée !',
   'status.roundOver': 'Manche terminée !',
   'status.spectating': '👀 Spectateur · au tour de {name}',
-  'status.challenge': 'Super Joker +4 ! Accepter ou contester ?',
+  'status.challenge': '{card} ! Accepter ou contester ?',
   'status.stack': 'Cumule un +2/+4 ou prends {n} cartes !',
   'status.drawnPass': 'Joue la carte piochée ou passe',
   'status.drawnForced': 'Tu dois jouer la carte piochée',
@@ -551,6 +643,7 @@ const fr = {
   // ---------- événements ----------
   'ev.skipped': '⊘ Passe ton tour',
   'ev.reverse': '⇄ Inversion !',
+  'ev.flip': 'FLIP !',
   'ev.caught': 'Contre-UNO ! 🚨',
   'ev.jumpIn': 'Interception ! ⚡',
   'ev.iWin': 'J\'ai gagné ! 🎉',
@@ -575,6 +668,11 @@ const fr = {
   'log.draw': p => `${p.me ? 'Tu as' : `${p.who} a`} pioché ${p.n} carte${s(p.n)}${p.reason}`,
   'log.reason.draw2': ' (+2)',
   'log.reason.wild4': ' (+4)',
+  'log.reason.draw1': ' (+1)',
+  'log.reason.draw5': ' (+5)',
+  'log.reason.wild2': ' (+2)',
+  'log.reason.wildColor': ' (pioche couleur)',
+  'log.flip': p => `<b>Flip !</b> Côté ${p.dark ? 'obscur' : 'clair'}, ${p.color}`,
   'log.reason.caught': ' (oubli du UNO)',
   'log.reason.challenge': ' (contestation)',
   'log.pass': p => (p.me ? 'Tu as passé' : `${p.who} a passé`),
@@ -599,6 +697,7 @@ const fr = {
   'reason.onlyDrawn': 'Tu ne peux jouer que la carte que tu viens de piocher',
   'reason.stack': 'Cumule un +2/+4 ou prends {n} cartes',
   'reason.take': 'Prends les {n} cartes',
+  'reason.takeUntil': 'Pioche jusqu\'à tomber sur une carte {color}',
   'reason.noMatch': '{card} ne va pas : il faut du {color} ou « {value} »',
 
   // ---------- choix ----------
@@ -635,19 +734,49 @@ const fr = {
   'color.yellow': 'jaune',
   'color.green': 'vert',
   'color.blue': 'bleu',
+  'color.pink': 'rose',
+  'color.teal': 'turquoise',
+  'color.orange': 'orange',
+  'color.purple': 'violet',
   'value.skip': 'Passe ton tour',
   'value.reverse': 'Inversion',
   'value.draw2': '+2',
   'value.wild': 'Joker',
   'value.wild4': 'Super Joker +4',
+  'value.draw1': '+1',
+  'value.draw5': '+5',
+  'value.wild2': 'Joker +2',
+  'value.wildColor': 'Joker Pioche Couleur',
+  'value.skipAll': 'Passe pour tous',
+  'value.flip': 'Flip',
   cardName: ({ color, value }) => {
-    if (value === 'wild') return 'Joker';
-    if (value === 'wild4') return 'Super Joker +4';
+    const wild = { wild: 'Joker', wild4: 'Super Joker +4', wild2: 'Joker +2', wildColor: 'Joker Pioche Couleur' }[value];
+    if (wild) return wild;
     if (value === 'skip') return `Passe ton tour ${COLOR_FR[color]}`;
+    if (value === 'skipAll') return `Passe pour tous ${COLOR_FR[color]}`;
     if (value === 'reverse') return `Inversion ${COLOR_FR_F[color]}`;
-    if (value === 'draw2') return `+2 ${COLOR_FR[color]}`;
+    if (value === 'flip') return `Flip ${COLOR_FR[color]}`;
+    if (value === 'draw1' || value === 'draw2' || value === 'draw5') return `+${value.slice(4)} ${COLOR_FR[color]}`;
     return `${value} ${COLOR_FR[color]}`;
   },
+
+  // ---------- UNO Flip ----------
+  'side.light': '☀️ Côté clair',
+  'side.dark': '🌑 Côté obscur',
+  'flip.backsTitle': 'L\'autre face de ses cartes',
+  'flip.backsOf': 'Les cartes de {name}, vues de ton côté',
+  'modal.pickColorFlip': 'Un joker est apparu : choisis sa couleur',
+
+  // ---------- chat vocal ----------
+  'voice.join': 'Rejoindre le chat vocal',
+  'voice.leave': 'Quitter le chat vocal',
+  'voice.mute': 'Couper ton micro (V)',
+  'voice.unmute': 'Rallumer ton micro (V)',
+  'voice.onTag': 'Dans le chat vocal',
+  'voice.mutedTag': 'Dans le chat vocal (micro coupé)',
+  'voice.needHttps': 'Le micro ne marche que sur le lien en ligne sécurisé (https://) ou sur le PC serveur : tu peux écouter, pas parler',
+  'voice.noMic': 'Pas d\'accès au micro : tu peux écouter, pas parler',
+  'voice.unsupported': 'Ce navigateur ne gère pas le chat vocal',
 
   // ---------- erreurs du serveur ----------
   'err.needTwoPlayers': 'Il faut au moins 2 joueurs',
@@ -676,7 +805,10 @@ const fr = {
   'err.noGame': 'Aucune partie en cours',
   'err.rulesBetweenGames': 'Change les règles entre deux parties',
   'err.roomFull': 'La salle est pleine',
-  'err.roomFullMax': 'Cette salle est pleine (10 joueurs max)',
+  'err.roomFullMax': p => `Cette salle est pleine (${p.max || 10} joueurs max)`,
+  'err.tooManyPlayers': p => `Ce jeu se joue à ${p.max} joueurs maximum`,
+  'err.unknownGame': 'Jeu inconnu',
+  'err.wrongGame': 'Cette salle joue à un autre jeu',
   'err.tooManyRooms': 'Trop de salles ouvertes sur le serveur, réessaie plus tard',
   'err.noSuchPlayer': 'Ce joueur n\'existe pas',
   'err.useLeave': 'Utilise plutôt « Quitter »',
@@ -713,7 +845,7 @@ const fr = {
       <li>Ça ne se connecte pas ? Lance <code>allow-firewall.bat</code> une fois sur le PC serveur, ou clique sur « Autoriser » dans la fenêtre du pare-feu Windows.</li>
     </ol>
     <h3>🃏 Les bases</h3>
-    <p>Pose une carte de la même <b>couleur</b> ou du même <b>numéro/symbole</b> que celle du dessus, ou un <b>Joker</b>. Tu ne peux pas (ou tu ne veux pas) ? Pioche une carte : si elle est jouable, tu peux la poser tout de suite. Le premier à vider sa main gagne la manche et marque les points des cartes restant chez les autres (numéros = leur valeur, cartes action = 20, jokers = 50).</p>
+    <p>Pose une carte de la même <b>couleur</b> ou du même <b>numéro/symbole</b> que celle du dessus, ou un <b>Joker</b>. Tu ne peux pas (ou tu ne veux pas) ? Pioche une carte : si elle est jouable, tu peux la poser tout de suite. Le premier à vider sa main gagne la manche et marque les points des cartes restant chez les autres, divisés par la racine carrée du nombre d'adversaires (numéros = leur valeur, cartes action = 20, jokers = 50) : une partie dure à peu près autant à 3 qu'à 10.</p>
     <h3>⚡ Cartes action</h3>
     <ul>
       <li><b>Passe ton tour</b> : le joueur suivant ne joue pas.</li>
@@ -722,12 +854,29 @@ const fr = {
       <li><b>Joker</b> : tu choisis la couleur suivante.</li>
       <li><b>Super Joker +4</b> : tu choisis la couleur, le joueur suivant pioche 4 cartes et passe son tour. Il n'est <i>légal</i> que si tu n'as aucune carte de la couleur en cours. La victime peut <b>contester</b> : si tu as bluffé, c'est toi qui pioches 4 ; si tu étais honnête, elle pioche 6.</li>
     </ul>
+    <h3>⭐ Points bonus (activés par défaut)</h3>
+    <ul>
+      <li>🚨 Contre-UNO réussi : <b>+10</b></li>
+      <li>⚡ Poser 3 cartes ou plus d'un coup : <b>+5 par carte</b></li>
+      <li>🎯 Finir sur une carte action ou un joker : <b>+20</b></li>
+      <li>🔥 Gagner des manches d'affilée : <b>+10</b>, <b>+20</b>, puis <b>+30</b> à chaque victoire suivante</li>
+    </ul>
     <h3>📣 UNO !</h3>
     <p>Appuie sur <b>UNO !</b> quand il te reste 2 cartes (avant de jouer) ou juste après être passé à 1 (avec la règle <b>UNO à la dernière carte</b> : seulement une fois à 1 carte). Si tu oublies, n'importe qui peut appuyer sur <b>Contre-UNO !</b> avant que le joueur suivant ne joue, et tu pioches une pénalité.</p>
+    <h3>🌗 UNO Flip (l'hôte l'active dans le salon)</h3>
+    <p>Chaque carte a un <b>côté clair</b> et un <b>côté obscur</b>. On commence côté clair. Tu vois la face en jeu de tes cartes, et les autres voient leur autre face : surveille ce que tiennent tes adversaires ! Touche un joueur pour voir ses cartes en grand.</p>
+    <ul>
+      <li><b>Flip</b> : toutes les cartes se retournent, mains, pioche et défausse. Si un joker apparaît sur le dessus, tu choisis sa couleur.</li>
+      <li>☀️ <b>+1</b> : le joueur suivant pioche 1 carte et passe son tour. <b>Joker +2</b> : tu choisis la couleur, le suivant pioche 2 et passe son tour (contestable comme un +4).</li>
+      <li>🌑 <b>+5</b> : le suivant pioche 5 et passe son tour. <b>Passe pour tous</b> : tu rejoues. <b>Joker Pioche Couleur</b> : tu choisis une couleur, le suivant pioche jusqu'à tomber dessus et passe son tour. On ne peut pas le contester, sauf si l'hôte active <b>Contester la Pioche Couleur</b>.</li>
+      <li>Points : +1 = 10, +5 / Inversion / Passe / Flip = 20, Passe pour tous = 30, Joker = 40, Joker +2 = 50, Joker Pioche Couleur = 60.</li>
+    </ul>
+    <h3>🎧 Chat vocal</h3>
+    <p>Appuie sur <b>🎧</b> pour parler avec la table, et sur <b>🎙️</b> (ou <b>V</b>) pour couper ton micro. Le micro demande le <b>lien en ligne</b> sécurisé (https://) ou le PC serveur lui-même ; sur une simple adresse Wi-Fi tu peux quand même écouter. Celui qui parle s'allume en vert.</p>
     <h3>🏠 Règles maison (l'hôte choisit dans le salon)</h3>
     <ul>
       <li><b>Pose multiple</b> : pose d'un coup plusieurs cartes du même chiffre ou symbole, quelle que soit leur couleur (par ex. quatre « 1 »). Seule la première doit correspondre ; la dernière choisit la couleur. Les cartes action s'additionnent : deux +2 font +4, deux « Passe ton tour » sautent deux joueurs.</li>
-      <li><b>Dernier survivant</b> : vider ta main ne finit pas la manche, tu sors simplement du jeu. La manche s'arrête quand un seul joueur a encore des cartes : il marque 0 point. Les autres marquent 50 points par joueur qui avait encore des cartes au moment de leur sortie.</li>
+      <li><b>Dernier survivant</b> : vider ta main ne finit pas la manche, tu sors simplement du jeu. La manche s'arrête quand un seul joueur a encore des cartes : il marque 0 point. Les points dépendent de ta place : 100 pour le premier sorti, jusqu'à 0 pour le dernier (à 5 joueurs : 100, 75, 50, 25, 0).</li>
       <li><b>Cumul</b> : réponds à un +2 par un +2 ou un +4, ou à un +4 par un +4. La pénalité grossit jusqu'à ce que quelqu'un ne puisse plus cumuler.</li>
       <li><b>Piocher jusqu'à pouvoir jouer</b> : continue de piocher jusqu'à avoir une carte jouable.</li>
       <li><b>Jeu obligatoire</b> : si la carte piochée est jouable, tu dois la jouer.</li>

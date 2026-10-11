@@ -8,7 +8,8 @@ if errorlevel 1 (
   exit /b
 )
 netsh advfirewall firewall delete rule name="UNO Night (TCP 3000)" >nul 2>&1
-netsh advfirewall firewall add rule name="UNO Night (TCP 3000)" dir=in action=allow protocol=TCP localport=3000 profile=any
+netsh advfirewall firewall delete rule name="Game Night (TCP 3000)" >nul 2>&1
+netsh advfirewall firewall add rule name="Game Night (TCP 3000)" dir=in action=allow protocol=TCP localport=3000 profile=any
 if errorlevel 1 (
   echo Could not add the firewall rule.
 ) else (

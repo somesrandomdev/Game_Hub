@@ -5,11 +5,11 @@ on:
   pull_request:
 
 jobs:
-  uno:
+  test:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: uno
+        working-directory: .
     strategy:
       matrix:
         node: [18, 20, 22]

@@ -3,7 +3,17 @@
 // Pure UNO rules engine. No I/O: the server feeds it actions and broadcasts views.
 
 const COLORS = ['red', 'yellow', 'green', 'blue'];
+const DARK_COLORS = ['pink', 'teal', 'orange', 'purple'];
 const ACTIONS = ['skip', 'reverse', 'draw2'];
+
+// UNO Flip: every card has a light and a dark face. Cards are stored with the face in
+// play as { color, value } and the other face as `back`; a Flip card swaps them all.
+const LIGHT_ACTIONS = ['draw1', 'reverse', 'skip', 'flip'];
+const DARK_ACTIONS = ['draw5', 'reverse', 'skipAll', 'flip'];
+// how many cards each draw card deals ('color' = until the chosen color turns up)
+const DRAWS = { draw1: 1, draw2: 2, wild2: 2, wild4: 4, draw5: 5, wildColor: 'color' };
+const WILD_DRAWS = new Set(['wild4', 'wild2', 'wildColor']);
+const POINTS = { draw1: 10, draw2: 20, reverse: 20, skip: 20, flip: 20, draw5: 20, skipAll: 30, wild4: 50, wild2: 50, wildColor: 60 };
 
 const DEFAULT_SETTINGS = Object.freeze({
   startCards: 7,
@@ -19,6 +29,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   unoLastCard: false,      // UNO can only be called once you're actually down to one card
   unoPenalty: 2,
   turnTimer: 0,            // seconds, 0 = off
+  flip: false,             // UNO Flip: light and dark sides, Flip cards turn everything over
+  challengeColor: false,   // UNO Flip: a Wild Draw Color may be challenged too
+  bonuses: true,           // bonus points: catching, combos, going out on an action card, win streaks
 });
 
 const LIMITS = {
@@ -28,7 +41,19 @@ const LIMITS = {
   turnTimer: [0, 300],
 };
 
-const RANK_POINTS = 50;    // last-standing: per opponent still holding cards when you go out
+// Round points don't grow with the size of the table, so a game to 500 lasts about as
+// many rounds with 3 players as with 10.
+// Last standing: 100 for going out first, 0 for the last one holding cards, the places in
+// between spread evenly (rounded to 5).
+const placePoints = (place, players) => (players < 2 ? 0 : Math.round((20 * (players - place)) / (players - 1)) * 5);
+
+// Bonus points (the `bonuses` setting)
+const BONUS = {
+  catch: 10,        // catching someone who forgot UNO
+  comboCard: 5,     // per card when playing 3 or more at once
+  finish: 20,       // going out on an action card or a wild
+  streak: 10,       // per round won in a row after the first, up to 30
+};
 
 const { GameError } = require('./messages');
 
@@ -62,6 +87,21 @@ function buildDeck() {
   return deck;
 }
 
+function buildFlipDeck(rng = Math.random) {
+  const faces = (colors, actions, wild, wildDraw) => {
+    const out = [];
+    for (const color of colors) {
+      for (let n = 1; n <= 9; n++) out.push({ color, value: String(n) }, { color, value: String(n) });
+      for (const a of actions) out.push({ color, value: a }, { color, value: a });
+    }
+    for (let i = 0; i < 4; i++) out.push({ color: 'wild', value: wild }, { color: 'wild', value: wildDraw });
+    return out;
+  };
+  const light = faces(COLORS, LIGHT_ACTIONS, 'wild', 'wild2');
+  const dark = shuffle(faces(DARK_COLORS, DARK_ACTIONS, 'wild', 'wildColor'), rng);
+  return light.map((f, id) => ({ id, ...f, back: dark[id] }));
+}
+
 function shuffle(arr, rng = Math.random) {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
@@ -70,11 +110,14 @@ function shuffle(arr, rng = Math.random) {
   return arr;
 }
 
-function cardPoints(card) {
-  if (card.color === 'wild') return 50;
-  if (ACTIONS.includes(card.value)) return 20;
-  return Number(card.value);
+function cardPoints(card, flip = false) {
+  if (card.value === 'wild') return flip ? 40 : 50;
+  return POINTS[card.value] ?? Number(card.value);
 }
+
+// What everyone may see of a card: the face in play, never the other side.
+const face = c => (c ? { id: c.id, color: c.color, value: c.value } : c);
+const isDraw = v => v in DRAWS;
 
 class UnoGame {
   constructor(playerIds, settings = {}, { rng = Math.random, now = Date.now } = {}) {
@@ -90,6 +133,7 @@ class UnoGame {
     this.events = [];
     this.seq = 0;
     this.roundResult = null;
+    this.streak = { player: null, count: 0 };
     this.startRound();
   }
 
@@ -99,6 +143,7 @@ class UnoGame {
   get top() { return this.discard[this.discard.length - 1]; }
 
   isOut(pid) { return this.finished.includes(pid); }
+  get colors() { return this.side === 'dark' ? DARK_COLORS : COLORS; }
   get active() { return this.players.filter(id => !this.isOut(id)); }
 
   // Players who already went out (last-standing) are stepped over.
@@ -160,6 +205,45 @@ class UnoGame {
     return got;
   }
 
+  // Wild Draw Color: keep drawing until a card of that color turns up.
+  giveUntil(pid, color, reason) {
+    let n = 0;
+    for (;;) {
+      const card = this.drawOne();
+      if (!card) break;
+      this.hands[pid].push(card);
+      n++;
+      if (card.color === color) break;
+    }
+    this.unoSafe.delete(pid);
+    this.vulnerable.delete(pid);
+    if (n) this.emit('draw', { player: pid, count: n, reason });
+  }
+
+  // Deal out a draw penalty ({ count, type, color }), plus `extra` cards on top.
+  givePenalty(pid, penalty, reason, extra = 0) {
+    if (penalty.type === 'wildColor') {
+      this.giveUntil(pid, penalty.color, reason);
+      if (extra) this.give(pid, extra, reason);
+    } else this.give(pid, penalty.count + extra, reason);
+  }
+
+  // Flip: every card in the game turns over. A wild landing on top takes `color`.
+  flipAll(color) {
+    this.side = this.side === 'dark' ? 'light' : 'dark';
+    const turn = c => {
+      const { back } = c;
+      c.back = { color: c.color, value: c.value };
+      c.color = back.color;
+      c.value = back.value;
+    };
+    this.drawPile.forEach(turn);
+    this.discard.forEach(turn);
+    for (const hand of Object.values(this.hands)) hand.forEach(turn);
+    this.color = this.top.color === 'wild' ? color : this.top.color;
+    this.emit('flip', { side: this.side, card: face(this.top), color: this.color });
+  }
+
   // After hands move around wholesale (7-0 rule) nobody gets punished for the surprise.
   settleUno(pid) {
     const len = this.hands[pid].length;
@@ -187,7 +271,8 @@ class UnoGame {
   startRound() {
     const n = this.players.length;
     this.round++;
-    this.drawPile = shuffle(buildDeck(), this.rng);
+    this.side = 'light';
+    this.drawPile = shuffle(this.settings.flip ? buildFlipDeck(this.rng) : buildDeck(), this.rng);
     this.discard = [];
     this.hands = {};
     for (const id of this.players) this.hands[id] = [];
@@ -197,7 +282,7 @@ class UnoGame {
       for (const id of this.players) this.hands[id].push(this.drawPile.pop());
     }
     let first = this.drawPile.pop();
-    while (first.color === 'wild') {
+    while (first.color === 'wild' || first.value === 'flip') {
       // bury it somewhere below the top and flip again
       this.drawPile.splice(Math.floor(this.rng() * this.drawPile.length), 0, first);
       first = this.drawPile.pop();
@@ -213,10 +298,11 @@ class UnoGame {
     this.vulnerable = new Map(); // pid -> seq when they became catchable
     this.finished = [];          // last-standing: players who went out, in order
     this.awarded = {};
+    this.bonuses = {};           // pid -> [{ kind, points }] earned this round
     this.phase = 'play';
     this.roundResult = null;
     this.touchTurn();
-    this.emit('roundStart', { round: this.round, dealer: this.players[this.dealer], card: first });
+    this.emit('roundStart', { round: this.round, dealer: this.players[this.dealer], card: face(first) });
 
     if (first.value === 'skip' || (first.value === 'reverse' && n === 2)) {
       this.emit('skip', { player: this.current });
@@ -225,16 +311,23 @@ class UnoGame {
       this.direction = -1;
       this.turn = this.dealer;
       this.emit('reverse', { direction: -1 });
-    } else if (first.value === 'draw2') {
-      this.give(this.current, 2, 'draw2');
+    } else if (isDraw(first.value)) {
+      this.give(this.current, DRAWS[first.value], first.value);
       this.emit('skip', { player: this.current });
       this.advance(1);
     }
   }
 
+  addBonus(pid, kind, points) {
+    if (!this.settings.bonuses || !points || !(pid in this.scores)) return;
+    this.scores[pid] += points;
+    (this.bonuses[pid] ||= []).push({ kind, points });
+    this.emit('bonus', { player: pid, kind, points });
+  }
+
   // Last-standing: the player (already in this.finished) sits out the rest of the round.
   finish(pid) {
-    const points = RANK_POINTS * this.active.length;
+    const points = placePoints(this.finished.length, this.players.length);
     this.awarded[pid] = points;
     this.scores[pid] += points;
     this.unoSafe.delete(pid);
@@ -245,18 +338,25 @@ class UnoGame {
 
   endRound(winner) {
     const hands = {};
-    for (const id of this.players) hands[id] = this.hands[id].slice();
+    for (const id of this.players) hands[id] = this.hands[id].map(face);
     let loser = null;
     if (this.settings.lastStanding) {
       loser = this.active[0] ?? null;
     } else {
-      let points = 0;
+      // the cards left in the other hands, divided by the square root of the number of
+      // opponents: the official rule with 2 players, and a big table no longer hands out a
+      // game-winning pile (a game to 500 takes about as many rounds at any table size)
+      let total = 0;
       for (const id of this.players) {
-        if (id !== winner) points += this.hands[id].reduce((sum, c) => sum + cardPoints(c), 0);
+        if (id !== winner) total += this.hands[id].reduce((sum, c) => sum + cardPoints(c, this.settings.flip), 0);
       }
+      const points = Math.round(total / Math.sqrt(Math.max(1, this.players.length - 1)));
       this.scores[winner] += points;
       this.awarded = { [winner]: points };
     }
+    // winning rounds back to back
+    this.streak = this.streak.player === winner ? { player: winner, count: this.streak.count + 1 } : { player: winner, count: 1 };
+    if (this.streak.count > 1) this.addBonus(winner, 'streak', Math.min(3, this.streak.count - 1) * BONUS.streak);
     const points = this.awarded[winner] ?? 0;
     const target = this.settings.targetScore;
     const gameOver = target === 0 || Math.max(...Object.values(this.scores)) >= target;
@@ -266,7 +366,7 @@ class UnoGame {
     this.drawn = null;
     this.vulnerable.clear();
     const ranking = loser ? [...this.finished, loser] : null;
-    this.roundResult = { winner, loser, points, awarded: { ...this.awarded }, ranking, hands, scores: { ...this.scores }, gameOver };
+    this.roundResult = { winner, loser, points, awarded: { ...this.awarded }, bonuses: { ...this.bonuses }, ranking, hands, scores: { ...this.scores }, gameOver, streak: this.streak.count };
     this.emit('roundOver', { winner, loser, points, gameOver });
   }
 
@@ -293,6 +393,7 @@ class UnoGame {
     delete this.hands[pid];
     delete this.scores[pid];
     delete this.awarded[pid];
+    delete this.bonuses[pid];
     this.finished = this.finished.filter(id => id !== pid);
     this.players.splice(idx, 1);
     this.unoSafe.delete(pid);
@@ -337,9 +438,10 @@ class UnoGame {
     if (pid !== this.current) return this.canJumpIn(pid, card);
     if (this.drawn !== null) return card.id === this.drawn;
     if (this.pending.count > 0) {
-      if (!this.settings.stacking) return false;
-      if (this.pending.type === 'wild4') return card.value === 'wild4';
-      return card.value === 'draw2' || card.value === 'wild4';
+      const type = this.pending.type;
+      if (!this.settings.stacking || type === 'wildColor') return false;
+      // the same draw card, or a wild draw on top of a colored one
+      return card.value === type || (!WILD_DRAWS.has(type) && (card.value === 'wild4' || card.value === 'wild2'));
     }
     return this.matches(card);
   }
@@ -376,8 +478,14 @@ class UnoGame {
     const last = cards[cards.length - 1];
     let chosen = last.color;
     if (last.color === 'wild') {
-      if (!COLORS.includes(opts.color)) throw new GameError('pickColor');
+      if (!this.colors.includes(opts.color)) throw new GameError('pickColor', { colors: this.colors });
       chosen = opts.color;
+    }
+    // an odd number of Flips turns the table over; if a wild comes up, the player picks its color
+    const flips = card.value === 'flip' && cards.length % 2 === 1;
+    if (flips && last.back.color === 'wild') {
+      const next = this.side === 'dark' ? COLORS : DARK_COLORS;
+      if (!next.includes(opts.flipColor)) throw new GameError('pickColor', { colors: next, flip: true });
     }
     const swap = this.settings.sevenZero && card.value === '7' && hand.length > cards.length;
     if (swap && (opts.target === pid || !this.hands[opts.target] || this.isOut(opts.target))) {
@@ -385,7 +493,7 @@ class UnoGame {
     }
 
     const prevColor = this.color;
-    const guilty = card.value === 'wild4' && hand.some(c => !ids.includes(c.id) && c.color === prevColor);
+    const guilty = WILD_DRAWS.has(card.value) && hand.some(c => !ids.includes(c.id) && c.color === prevColor);
     const duel = this.active.length === 2;
 
     this.vulnerable.clear();
@@ -398,7 +506,7 @@ class UnoGame {
     for (const c of cards) {
       hand.splice(hand.indexOf(c), 1);
       this.discard.push(c);
-      this.emit('play', { player: pid, card: c, color: c.color === 'wild' ? chosen : c.color });
+      this.emit('play', { player: pid, card: face(c), color: c.color === 'wild' ? chosen : c.color });
     }
     this.color = chosen;
 
@@ -411,6 +519,8 @@ class UnoGame {
     }
     const out = hand.length === 0;
     const leaving = out && this.settings.lastStanding;
+    if (cards.length >= 3) this.addBonus(pid, 'combo', cards.length * BONUS.comboCard);
+    if (out && isNaN(Number(last.value))) this.addBonus(pid, 'finish', BONUS.finish);
     if (leaving) this.finished.push(pid);
     const n = cards.length;
 
@@ -426,11 +536,27 @@ class UnoGame {
           this.advance(1);
         }
         break;
+      case 'draw1':
       case 'draw2':
-        this.applyDraw(2 * n, 'draw2', { out });
+      case 'draw5':
+        this.applyDraw({ count: DRAWS[card.value] * n, type: card.value }, { out });
         break;
       case 'wild4':
-        this.applyDraw(4 * n, 'wild4', { out, offender: pid, guilty });
+      case 'wild2':
+        this.applyDraw({ count: DRAWS[card.value] * n, type: card.value }, { out, offender: pid, guilty });
+        break;
+      case 'wildColor':
+        this.applyDraw({ count: 1, type: 'wildColor', color: chosen }, { out, offender: pid, guilty });
+        break;
+      case 'skipAll':
+        // everyone else is skipped: the same player goes again
+        for (const id of this.active) if (id !== pid) this.emit('skip', { player: id });
+        if (leaving) this.advance(1);
+        else this.touchTurn();
+        break;
+      case 'flip':
+        if (flips) this.flipAll(opts.flipColor);
+        this.advance(1);
         break;
       case '7':
         if (swap) this.swapHands(pid, opts.target);
@@ -453,28 +579,30 @@ class UnoGame {
     this.advance(count + 1);
   }
 
-  applyDraw(count, type, { out, offender, guilty }) {
+  // penalty: { count, type }, or { count: 1, type: 'wildColor', color } for Wild Draw Color
+  applyDraw(penalty, { out, offender, guilty }) {
     const victim = this.players[this.nextIndex(1)];
+    const { type } = penalty;
+    if (type !== 'wildColor') penalty = { count: this.pending.count + penalty.count, type };
     if (out) {
       // last card: whatever is stacked lands on the victim immediately
-      const total = this.pending.count + count;
       this.pending = { count: 0, type: null };
-      this.give(victim, total, type);
+      this.givePenalty(victim, penalty, type);
       this.advance(2);
       return;
     }
-    if (this.settings.stacking) {
-      this.pending = { count: this.pending.count + count, type };
+    if (this.settings.stacking && type !== 'wildColor') {
+      this.pending = penalty;
       this.advance(1);
       return;
     }
-    if (type === 'wild4' && this.settings.challenge) {
-      this.pending = { count, type };
+    if (WILD_DRAWS.has(type) && this.settings.challenge && (type !== 'wildColor' || this.settings.challengeColor)) {
+      this.pending = penalty;
       this.challenge = { offender, victim, guilty };
       this.advance(1);
       return;
     }
-    this.give(victim, count, type);
+    this.givePenalty(victim, penalty, type);
     this.emit('skip', { player: victim });
     this.advance(2);
   }
@@ -503,10 +631,10 @@ class UnoGame {
     this.vulnerable.clear();
 
     if (this.pending.count > 0) {
-      const { count, type } = this.pending;
+      const penalty = this.pending;
       this.pending = { count: 0, type: null };
       this.challenge = null;
-      this.give(pid, count, type);
+      this.givePenalty(pid, penalty, penalty.type);
       this.emit('skip', { player: pid });
       this.advance(1);
       return;
@@ -548,16 +676,16 @@ class UnoGame {
     this.assertTurn(pid);
     if (!this.challenge) throw new GameError('nothingToChallenge');
     const { offender, guilty } = this.challenge;
-    const { count } = this.pending;
+    const penalty = this.pending;
     this.challenge = null;
     this.pending = { count: 0, type: null };
     this.vulnerable.clear();
     this.emit('challenge', { player: pid, target: offender, success: guilty });
     if (guilty) {
-      this.give(offender, count, 'challenge');
+      this.givePenalty(offender, penalty, 'challenge');
       this.touchTurn(); // challenger now plays normally
     } else {
-      this.give(pid, count + 2, 'challenge');
+      this.givePenalty(pid, penalty, 'challenge', 2);
       this.emit('skip', { player: pid });
       this.advance(1);
     }
@@ -583,6 +711,7 @@ class UnoGame {
     this.vulnerable.delete(target);
     this.emit('caught', { player: target, by: pid });
     this.give(target, this.settings.unoPenalty, 'caught');
+    this.addBonus(pid, 'catch', BONUS.catch);
   }
 
   // ---------- views ----------
@@ -603,14 +732,21 @@ class UnoGame {
         vulnerable: this.vulnerable.has(id),
         place: this.finished.indexOf(id) + 1,
         roundPoints: this.awarded[id] ?? 0,
+        bonus: (this.bonuses[id] || []).reduce((s, b) => s + b.points, 0),
+        // UNO Flip: the other side of everyone else's cards faces the table
+        backs: this.settings.flip && id !== pid ? (this.hands[id] || []).map(c => c.back) : undefined,
       })),
-      hand,
+      hand: hand ? hand.map(face) : null,
       playable: hand ? hand.filter(c => this.canPlay(pid, c)).map(c => c.id) : [],
       safe: this.unoSafe.has(pid),
       canUno: Boolean(hand && hand.length && this.phase === 'play' && this.nearUno(hand)),
-      top: this.top,
-      recent: this.discard.slice(-4),
+      top: face(this.top),
+      recent: this.discard.slice(-4).map(face),
       color: this.color,
+      side: this.side,
+      colors: this.colors,
+      // the draw pile lies face down, so its top card shows its other side
+      drawBack: this.settings.flip && this.drawPile.length ? this.drawPile[this.drawPile.length - 1].back : null,
       direction: this.direction,
       current: this.phase === 'play' ? this.current : null,
       dealer: this.players[this.dealer],
@@ -629,5 +765,5 @@ class UnoGame {
 }
 
 module.exports = {
-  UnoGame, GameError, COLORS, DEFAULT_SETTINGS, sanitizeSettings, buildDeck, shuffle, cardPoints,
+  UnoGame, GameError, COLORS, DARK_COLORS, DEFAULT_SETTINGS, sanitizeSettings, buildDeck, buildFlipDeck, shuffle, cardPoints,
 };

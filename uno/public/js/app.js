@@ -1,9 +1,10 @@
-import { createCard, createBack, cardName, sortHand, tiltFor, COLOR_HEX } from './cards.js';
+import { createCard, createBack, cardName, sortHand, tiltFor, setSide, COLOR_HEX } from './cards.js';
 import { sfx, isMuted, setMuted } from './sound.js';
-import { toast, bubble, vibrate } from './fx.js';
-import * as vfx from './vfx.js';
+import { toast, bubble, vibrate } from '/shared/fx.js';
+import * as vfx from '/shared/vfx.js';
 import { t, has, getLang, setLang, applyStatic, onLangChange } from './i18n.js';
-import { qrSvg } from './qr.js';
+import { qrSvg } from '/shared/qr.js';
+import { createVoice } from '/shared/voice.js';
 
 // ================================================================
 // helpers
@@ -29,6 +30,7 @@ const store = {
 
 const cardsOpt = n => [n, () => t('opt.cards', { n })];
 const SETTINGS_UI = [
+  { key: 'flip', hint: true, type: 'bool' },
   { key: 'startCards', type: 'select', options: [cardsOpt(5), cardsOpt(7), cardsOpt(10), cardsOpt(15)] },
   { key: 'targetScore', hint: true, type: 'select', options: [[0, () => t('opt.oneRound')], ...[100, 250, 500, 1000].map(n => [n, () => t('opt.points', { n })])] },
   { key: 'turnTimer', hint: true, type: 'select', options: [[0, () => t('opt.off')], ...[15, 30, 60].map(n => [n, () => t('opt.seconds', { n })])] },
@@ -36,8 +38,10 @@ const SETTINGS_UI = [
   { key: 'unoLastCard', hint: true, type: 'bool' },
   { key: 'multiPlay', hint: true, type: 'bool' },
   { key: 'lastStanding', hint: true, type: 'bool' },
+  { key: 'bonuses', hint: true, type: 'bool' },
   { key: 'stacking', hint: true, type: 'bool' },
   { key: 'challenge', hint: true, type: 'bool' },
+  { key: 'challengeColor', hint: true, type: 'bool' },
   { key: 'drawUntilPlayable', hint: true, type: 'bool' },
   { key: 'forcePlay', hint: true, type: 'bool' },
   { key: 'sevenZero', hint: true, type: 'bool' },
@@ -119,12 +123,14 @@ async function api(path, body) {
   return data;
 }
 
-async function act(action, extra = {}) {
+// quiet(err): return true to handle that error yourself (act then returns the error)
+async function act(action, extra = {}, { quiet } = {}) {
   if (!app.session) return false;
   try {
     await api('action', { code: app.session.code, token: app.session.token, action, ...extra });
     return true;
   } catch (err) {
+    if (quiet?.(err)) return err;
     sfx.error();
     if (err instanceof TypeError) toast(t('err.connection'), 'error');
     else toast(errorMessage(err), 'error');
@@ -132,6 +138,36 @@ async function act(action, extra = {}) {
     return false;
   }
 }
+
+// ---------------- voice chat ----------------
+
+const voice = createVoice({
+  send: (action, extra) => (app.session
+    ? api('action', { code: app.session.code, token: app.session.token, action, ...extra }).catch(() => {})
+    : Promise.resolve()),
+  onChange: renderVoice,
+  onSpeaking: (id, on) => { for (const el of speakerEls(id)) el.toggleAttribute('data-speaking', on); },
+  notify: key => toast(t(key), 'info', 4500),
+});
+
+function speakerEls(id) {
+  return [seatEl(id), $(`#lobby-players li[data-id="${id}"]`)].filter(Boolean);
+}
+
+function renderVoice() {
+  for (const b of $$('.voice-btn')) {
+    b.classList.toggle('on', voice.on);
+    b.title = t(voice.on ? 'voice.leave' : 'voice.join');
+  }
+  for (const b of $$('.mic-btn')) {
+    b.classList.toggle('hidden', !voice.on);
+    b.classList.toggle('muted', voice.muted);
+    b.textContent = voice.muted ? '🔇' : '🎙️';
+    b.title = t(voice.muted ? 'voice.unmute' : 'voice.mute');
+  }
+}
+
+const voiceTag = m => (m?.voice ? `<span class="voice-tag" title="${esc(t(m.voiceMuted ? 'voice.mutedTag' : 'voice.onTag'))}">${m.voiceMuted ? '🔇' : '🎙️'}</span>` : '');
 
 function saveSession(s) {
   app.session = s;
@@ -243,6 +279,7 @@ function setConn(ok) {
 }
 
 function leaveToHome(message) {
+  voice.leave(true);
   clearTimeout(recheckTimer);
   disconnect();
   clearSession();
@@ -256,6 +293,7 @@ function leaveToHome(message) {
   setConn(true);
   history.replaceState(null, '', location.pathname);
   document.body.dataset.color = 'none';
+  document.body.dataset.side = '';
   showScreen('home');
   if (message) toast(message, 'info', 3500);
 }
@@ -277,6 +315,7 @@ function onMessage(msg) {
       for (const m of msg.messages) addChat(m, false);
       break;
     case 'react': showReaction(msg.from, msg.emoji); break;
+    case 'signal': voice.onSignal(msg.from, msg.data); break;
     case 'kicked':
       disconnect();
       leaveToHome(has(`kick.${msg.reason}`) ? t(`kick.${msg.reason}`) : msg.reason);
@@ -288,6 +327,38 @@ function onMessage(msg) {
 // ================================================================
 // screens
 // ================================================================
+
+// ---------------- phones: play sideways ----------------
+// Held upright, a phone squeezes the table and puts your cards right under the buttons.
+// Once per visit, a game in portrait suggests turning it; Android can lock it sideways
+// (in fullscreen), elsewhere the hint goes away as soon as the phone is turned.
+
+const touchScreen = matchMedia('(pointer: coarse)');
+const portrait = matchMedia('(orientation: portrait) and (max-width: 640px)');
+let rotateSkipped = false;
+try { rotateSkipped = sessionStorage.getItem('uno.rotateSkip') === '1'; } catch { /* ignore */ }
+
+function updateRotateHint() {
+  const show = document.body.dataset.screen === 'game' && touchScreen.matches && portrait.matches && !rotateSkipped;
+  $('#rotate-hint').classList.toggle('hidden', !show);
+  $('#rotate-hint [data-action="rotate-lock"]').classList.toggle('hidden', !screen.orientation?.lock);
+}
+portrait.addEventListener?.('change', updateRotateHint);
+
+async function lockLandscape() {
+  try {
+    if (!document.fullscreenElement) await document.documentElement.requestFullscreen?.();
+    await screen.orientation.lock('landscape');
+  } catch {
+    toast(t('rotate.manual'), 'info', 3500);
+  }
+}
+
+function skipRotate() {
+  rotateSkipped = true;
+  try { sessionStorage.setItem('uno.rotateSkip', '1'); } catch { /* ignore */ }
+  updateRotateHint();
+}
 
 // Phones dim and lock mid-game otherwise, which drops the connection.
 // (Browsers only offer this on https or localhost, e.g. the online link.)
@@ -301,15 +372,19 @@ function showScreen(name) {
   for (const s of ['home', 'lobby', 'game']) $(`#screen-${s}`).classList.toggle('hidden', s !== name);
   document.body.dataset.screen = name;
   keepAwake(name === 'game');
+  updateRotateHint();
   if (name === 'home') startRoomPolling(); else stopRoomPolling();
 }
 
 function render(prev) {
   const s = app.state;
   if (!s) return;
+  voice.sync(s.members, s.me);
+  renderVoice();
   if (!s.game) {
     if (app.resultsKey) { closeModal('results'); app.resultsKey = null; }
     document.body.dataset.color = 'none';
+    document.body.dataset.side = '';
     stopTimer();
     showScreen('lobby');
     renderLobby(s);
@@ -386,7 +461,7 @@ function startRoomPolling() {
   stopRoomPolling();
   const poll = async () => {
     try {
-      const res = await fetch('/api/rooms');
+      const res = await fetch('/api/rooms?game=uno');
       const { rooms } = await res.json();
       app.lastRooms = rooms;
     } catch { app.lastRooms = []; }
@@ -430,7 +505,7 @@ async function createRoom() {
   const name = myName();
   if (!name) return;
   try {
-    const s = await api('create', { name });
+    const s = await api('create', { name, game: 'uno' });
     enterRoom(s);
   } catch (err) { toast(errorMessage(err), 'error'); }
 }
@@ -442,9 +517,13 @@ async function joinRoom(code) {
   if (code.length !== 4) { toast(t('toast.codeLength'), 'error'); $('#code-input').focus(); return; }
   const last = store.get('last', null);
   try {
-    const s = await api('join', { code, name, token: last?.code === code ? last.token : undefined });
+    const s = await api('join', { code, name, game: 'uno', token: last?.code === code ? last.token : undefined });
     enterRoom(s);
-  } catch (err) { toast(errorMessage(err), 'error'); }
+  } catch (err) {
+    // that code belongs to another game of the hub: go there
+    if (err.code === 'wrongGame' && /^[a-z]+$/.test(err.params?.game || '')) { location.href = `/${err.params.game}/?room=${code}`; return; }
+    toast(errorMessage(err), 'error');
+  }
 }
 
 // ---------------- lobby ----------------
@@ -497,6 +576,8 @@ function fillSettings(settings, editable) {
     el.disabled = !editable;
   }
   form.elements.challenge.closest('.setting').style.opacity = settings.stacking ? 0.5 : 1;
+  // only means something in UNO Flip
+  form.elements.challengeColor.closest('.setting').classList.toggle('hidden', !settings.flip);
 }
 
 function renderLobby(s) {
@@ -516,9 +597,11 @@ function renderLobby(s) {
           ${m.id === s.me ? `<span class="tag you">${t('tag.you')}</span>` : ''}
           ${m.isBot ? `<span class="tag">${t('tag.bot')}</span>` : ''}
           ${!m.connected ? `<span class="tag off">${t('tag.away')}</span>` : ''}
+          ${voiceTag(m)}
         </span>
         ${host && m.id !== s.me ? `<button class="btn ghost sm kick" data-kick="${m.id}" title="${esc(t('lobby.remove', { name: m.name }))}">✕</button>` : ''}
       </li>`).join('');
+    for (const m of s.members) if (voice.isSpeaking(m.id)) $(`#lobby-players li[data-id="${m.id}"]`)?.setAttribute('data-speaking', '');
   }
   $('#btn-add-bot').classList.toggle('hidden', !host || s.members.length >= 10);
   fillSettings(s.settings, host);
@@ -584,6 +667,8 @@ function renderGame(s, prev) {
   const myTurn = g.phase === 'play' && g.current === s.me;
 
   document.body.dataset.color = g.phase === 'play' ? g.color : 'none';
+  document.body.dataset.side = g.settings.flip && g.phase === 'play' ? g.side : '';
+  setSide(g.side);
   $('#g-code').textContent = s.code;
   const target = g.settings.targetScore;
   $('#g-round').textContent = target
@@ -659,8 +744,9 @@ function renderOpponents(s, g) {
     const flag = p.id === g.current && g.phase === 'play' ? `<span class="seat-flag now">${t('seat.now')}</span>`
       : p.id === next ? `<span class="seat-flag">${t('seat.next')}</span>` : '';
     const inner = `${flag}${avatarWrap(m, p.place ? null : p.count)}
-      <span class="seat-text"><span class="seat-name">${esc(m?.name ?? '?')}${p.id === g.dealer ? ' <span class="dealer-tag">(D)</span>' : ''}</span>
+      <span class="seat-text"><span class="seat-name">${esc(m?.name ?? '?')}${p.id === g.dealer ? ' <span class="dealer-tag">(D)</span>' : ''}${voiceTag(m)}</span>
       <span class="seat-meta">${status}</span></span>
+      ${p.backs?.length ? backsHtml(p.backs, g.side) : ''}
       ${p.uno ? '<span class="uno-tag">UNO</span>' : ''}
       ${p.vulnerable && amIn && g.phase === 'play' ? `<button class="catch-btn" data-catch="${p.id}">${t('seat.catch')}</button>` : ''}`;
 
@@ -695,6 +781,49 @@ function renderOpponents(s, g) {
   } else chip?.remove();
 }
 
+// UNO Flip: the other side of an opponent's cards faces the table, so everyone sees it.
+const BACKS_SHOWN = 8;
+function backsHtml(backs, side) {
+  const dark = side !== 'dark';
+  const cards = backs.slice(0, BACKS_SHOWN).map(b => createCard({ id: 0, ...b }, b.value === 'wild' ? dark : undefined).outerHTML);
+  const more = backs.length > BACKS_SHOWN ? `<span class="more">+${backs.length - BACKS_SHOWN}</span>` : '';
+  return `<div class="backs" title="${esc(t('flip.backsTitle'))}">${cards.join('')}${more}</div>`;
+}
+
+let backsPop = null;
+function closeBacks() {
+  backsPop?.el.remove();
+  clearTimeout(backsPop?.timer);
+  backsPop = null;
+}
+
+function toggleBacks(seat) {
+  const id = seat.dataset.id;
+  const open = backsPop?.id === id;
+  closeBacks();
+  const g = app.state?.game;
+  const p = g?.players.find(x => x.id === id);
+  if (open || !p?.backs?.length) return;
+  const dark = g.side !== 'dark';
+  const el = document.createElement('div');
+  el.className = 'backs-pop';
+  el.innerHTML = `<b>${esc(t('flip.backsOf', { name: member(id)?.name ?? '?' }))}</b><div class="cards">${
+    p.backs.map(b => createCard({ id: 0, ...b }, b.value === 'wild' ? dark : undefined).outerHTML).join('')}</div>`;
+  document.body.appendChild(el);
+  // under the seat if it sits in the top half of the screen, otherwise above it
+  const r = seat.getBoundingClientRect();
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  const left = Math.min(Math.max(8, r.left + r.width / 2 - w / 2), innerWidth - w - 8);
+  const top = r.top + r.height / 2 < innerHeight / 2 ? r.bottom + 8 : r.top - h - 8;
+  el.style.left = `${left}px`;
+  el.style.top = `${Math.max(8, top)}px`;
+  backsPop = { id, el, timer: setTimeout(closeBacks, 6000) };
+}
+
+// What a pending draw costs: "+4", or "+?" for a Wild Draw Color.
+const pendingLabel = p => (p.type === 'wildColor' ? '+?' : `+${p.count}`);
+
 // The order of play spelled out: who's on now, who's next, and when it's your turn.
 let stripSig = '';
 function renderTurnStrip(g) {
@@ -719,6 +848,7 @@ let infoSig = '';
 function renderTableInfo(g) {
   const box = $('#table-info');
   const html = g.phase !== 'play' ? '' : `
+    ${g.settings.flip ? `<span class="info-chip side-chip ${g.side === 'dark' ? 'dark' : ''}">${esc(t(`side.${g.side}`))}</span>` : ''}
     <span class="info-chip color-chip" data-c="${esc(g.color)}"><i></i>${esc(cap(colorName(g.color)))}</span>
     <span class="info-chip">${g.direction > 0 ? '↻' : '↺'} ${esc(t(g.direction > 0 ? 'dir.cw' : 'dir.ccw'))}</span>`;
   if (html === infoSig) return;
@@ -750,21 +880,28 @@ let discardSig = '';
 function renderPiles(g, myTurn) {
   const draw = $('#draw-pile');
   const can = myTurn && g.canDraw;
-  const sigD = `${g.drawPile}|${g.pending.count}|${can}|${getLang()}`;
+  const back = g.drawBack;
+  const sigD = `${g.drawPile}|${pendingLabel(g.pending)}|${can}|${getLang()}|${back ? `${back.color}:${back.value}` : ''}|${g.side}`;
   if (sigD !== drawSig) {
     drawSig = sigD;
     draw.innerHTML = '';
     const layers = Math.max(1, Math.min(3, g.drawPile));
     for (let i = 0; i < layers; i++) draw.appendChild(createBack());
     if (!g.drawPile) draw.lastChild.style.opacity = '0.25';
+    // UNO Flip: the deck lies face down, so its top card shows its other side
+    if (back) {
+      const top = createCard({ id: 0, ...back }, back.value === 'wild' ? g.side !== 'dark' : undefined);
+      top.classList.add('other-side');
+      draw.lastChild.replaceWith(top);
+    }
     draw.insertAdjacentHTML('beforeend', `<span class="pile-count">${t('pile.left', { n: g.drawPile })}</span>`);
-    if (g.pending.count > 0) draw.insertAdjacentHTML('beforeend', `<span class="pending-badge">+${g.pending.count}</span>`);
+    if (g.pending.count > 0) draw.insertAdjacentHTML('beforeend', `<span class="pending-badge">${pendingLabel(g.pending)}</span>`);
     draw.classList.toggle('can', can);
     draw.disabled = !can;
   }
 
   const discard = $('#discard-pile');
-  const sigX = `${g.recent.map(c => c.id).join(',')}|${g.color}|${getLang()}`;
+  const sigX = `${g.recent.map(c => c.id).join(',')}|${g.color}|${g.side}|${getLang()}`;
   if (sigX !== discardSig) {
     discardSig = sigX;
     discard.innerHTML = '';
@@ -813,12 +950,22 @@ function renderHand(g, myTurn) {
   const fresh = [];
   for (const c of cards) {
     let el = existing.get(c.id);
-    if (el) existing.delete(c.id);
-    else {
+    const faceKey = `${c.color}:${c.value}`;
+    if (el) {
+      existing.delete(c.id);
+      if (el.dataset.face !== faceKey) {
+        // turned over by a Flip: same card, other face
+        const turned = createCard(c);
+        turned.tabIndex = 0;
+        el.replaceWith(turned);
+        el = turned;
+      }
+    } else {
       el = createCard(c);
       el.tabIndex = 0;
       fresh.push(el);
     }
+    el.dataset.face = faceKey;
     el.classList.toggle('playable', myTurn && playable.has(c.id));
     el.classList.toggle('jump', !myTurn && playable.has(c.id));
     el.classList.toggle('drawn', g.drawn === c.id);
@@ -841,13 +988,31 @@ function layoutHand() {
   const wrap = $('#hand-wrap');
   const n = hand.children.length;
   if (!n) return;
+  const gapFor = (k, cw, avail) => (k > 1 ? Math.min(6, (avail - cw * k) / (k - 1)) : 6);
+
+  // Narrow screens: a big hand in one row only shows card corners, so it goes on two
+  // rows instead, the back row peeking out above the front one.
+  hand.style.setProperty('--hs', '1');
+  const full = hand.children[0].offsetWidth || 80;
+  const rows = n >= 7 && wrap.clientWidth < 700 && gapFor(n, full, wrap.clientWidth - 24 - full * 0.4) < -full * 0.3;
+  hand.classList.toggle('rows', rows);
+  if (rows) {
+    const per = Math.ceil(n / 2);
+    const gap = Math.max(gapFor(per, full, wrap.clientWidth - 24), -full * 0.6);
+    hand.style.setProperty('--gap', `${gap}px`);
+    hand.style.setProperty('--per1', per - 1);
+    for (const el of hand.children) {
+      el.style.setProperty('--rot', '0deg');
+      el.style.setProperty('--arc', '0px');
+    }
+    return;
+  }
+
   hand.style.setProperty('--hs', n > 9 ? Math.max(0.72, 9 / n).toFixed(3) : '1');
   const cw = hand.children[0].offsetWidth || 80;
   // leave room for the outer cards, which lean out of the row on the arc
   const avail = wrap.clientWidth - 24 - cw * 0.4;
-  let gap = 6;
-  if (n > 1) gap = Math.min(6, (avail - cw * n) / (n - 1));
-  gap = Math.max(gap, -cw * 0.7);
+  const gap = Math.max(gapFor(n, cw, avail), -cw * 0.7);
   hand.style.setProperty('--gap', `${gap}px`);
   const mid = (n - 1) / 2;
   const tilt = Math.min(10, n * 1.1);
@@ -938,9 +1103,12 @@ function renderActions(g, myP, myTurn) {
 
   const draw = $('#btn-draw');
   draw.classList.toggle('hidden', !g.canDraw);
-  if (g.pending.count > 0) draw.textContent = t(g.canChallenge ? 'btn.accept' : 'btn.take', { n: g.pending.count });
+  if (confirmTaps.has(draw)) { /* waiting for the second tap: keep the question showing */ }
+  else if (g.pending.type === 'wildColor') draw.textContent = t('btn.takeUntil', { color: colorName(g.pending.color) });
+  else if (g.pending.count > 0) draw.textContent = t(g.canChallenge ? 'btn.accept' : 'btn.take', { n: g.pending.count });
   else draw.textContent = t('btn.draw');
   draw.classList.toggle('warn', g.pending.count > 0);
+  draw.classList.toggle('nudge', myTurn && g.canDraw && !g.playable.length && !g.pending.count);
   $('#btn-pass').classList.toggle('hidden', !g.canPass);
   $('#btn-challenge').classList.toggle('hidden', !g.canChallenge);
   $('#btn-sort').textContent = t(`sort.${app.sortMode}`);
@@ -962,7 +1130,8 @@ function renderStatus(g, myP, myTurn) {
     text = t('multi.hint', { v: isNaN(Number(v)) ? t(`value.${v}`) : v });
   } else if (myTurn) {
     cls = 'mine';
-    if (g.canChallenge) { text = t('status.challenge'); cls = 'danger'; }
+    if (g.canChallenge) { text = t('status.challenge', { card: cardName(g.top) }); cls = 'danger'; }
+    else if (g.pending.type === 'wildColor') { text = t('reason.takeUntil', { color: colorName(g.pending.color) }); cls = 'danger'; }
     else if (g.pending.count > 0) { text = t('status.stack', { n: g.pending.count }); cls = 'danger'; }
     else if (g.drawn !== null) text = t(g.canPass ? 'status.drawnPass' : 'status.drawnForced');
     else {
@@ -1070,6 +1239,12 @@ function ringSparks(dir) {
   }
 }
 
+const BONUS_ICON = { catch: '🚨', combo: '⚡', finish: '🎯', streak: '🔥' };
+const bonusChips = list => (list || []).map(b => `<span class="bonus-chip">${BONUS_ICON[b.kind] || '⭐'}+${b.points}</span>`).join('');
+
+// how hard a card hits the pile
+const HEAVY = { wild4: 2.2, wildColor: 2.2, draw5: 2, draw2: 1.5, wild2: 1.5, draw1: 1.2 };
+
 function animateEvent(ev, g, handRects, ctx) {
   const mine = ev.player === me();
   const avatar = id => anchorFor(id);
@@ -1087,7 +1262,7 @@ function animateEvent(ev, g, handRects, ctx) {
       // the card is already drawn on the pile: hide it until the flying copy lands
       const onPile = pile.querySelector(`.card[data-id="${ev.card.id}"]`);
       const colors = vfx.colorsFor(ev.card.color === 'wild' ? null : ev.card.color);
-      const heavy = ev.card.value === 'wild4' ? 2.2 : ev.card.value === 'draw2' ? 1.5 : ev.card.color === 'wild' ? 1.4 : 1;
+      const heavy = HEAVY[ev.card.value] || (ev.card.color === 'wild' ? 1.4 : 1);
       const delay = ctx.playIdx * 150;
       const duration = dropped ? 260 : mine ? 440 : 560;
       if (onPile) {
@@ -1113,7 +1288,7 @@ function animateEvent(ev, g, handRects, ctx) {
             vfx.colorWave(toRect, ev.color);
             sfx.wild();
           }
-          if (ev.card.value === 'wild4') {
+          if (HEAVY[ev.card.value] >= 2) {
             sfx.boom();
             vfx.shake($('#table'), 1.2);
           }
@@ -1206,6 +1381,30 @@ function animateEvent(ev, g, handRects, ctx) {
         vfx.flyArc(createBack(), rectAround(avatar(ev.player), 30), rectAround(avatar(ev.target), 30), { duration: 600, lift: 0.3, trail: ['#c77dff', '#fff'] });
         vfx.flyArc(createBack(), rectAround(avatar(ev.target), 30), rectAround(avatar(ev.player), 30), { duration: 600, lift: -0.3, trail: ['#4ea1ff', '#fff'] });
       }
+      break;
+    }
+    case 'flip': {
+      // after the card that caused it lands
+      setTimeout(() => {
+        sfx.reverse();
+        sfx.whoosh();
+        document.body.classList.remove('flipping');
+        void document.body.offsetWidth;
+        document.body.classList.add('flipping');
+        setTimeout(() => document.body.classList.remove('flipping'), 650);
+        vfx.shout(t('ev.flip'), { color: '#fff', glow: ev.side === 'dark' ? '#c77dff' : '#ffd23f', size: 1.3 });
+        vfx.colorWave($('#discard-pile').getBoundingClientRect(), ev.color);
+        vibrate([40, 30, 40]);
+      }, ctx.playIdx ? 420 : 0);
+      break;
+    }
+    case 'bonus': {
+      // after the play or catch that earned it has landed
+      setTimeout(() => {
+        sfx.shimmer();
+        vfx.stamp(avatar(ev.player), `${BONUS_ICON[ev.kind] || '⭐'}+${ev.points}`, '#3ddc84');
+        if (mine) toast(t('toast.bonus', { label: t(`bonus.${ev.kind}`), pts: ev.points }), 'good', 2200);
+      }, ctx.playIdx ? 600 : 250);
       break;
     }
     case 'rotate':
@@ -1502,6 +1701,8 @@ function describe(ev) {
       return t('log.challenge', { ...p, target: esc(nameOf(ev.target)), targetMe: ev.target === me(), ok: ev.success });
     case 'swap': return t('log.swap', { ...p, target: esc(nameOf(ev.target)) });
     case 'rotate': return t('log.rotate');
+    case 'bonus': return t('log.bonus', { ...p, label: t(`bonus.${ev.kind}`), pts: ev.points });
+    case 'flip': return t('log.flip', { dark: ev.side === 'dark', color: colorName(ev.color) });
     case 'jumpIn': return t('log.jumpIn', p);
     case 'timeout': return t('log.timeout', p);
     case 'reshuffle': return t('log.reshuffle');
@@ -1541,6 +1742,7 @@ function logEvent(ev, store = true) {
 function cantPlayReason(g, card) {
   if (g.current !== me()) return t(g.settings.jumpIn ? 'reason.notTurnJump' : 'reason.notTurn');
   if (g.drawn !== null) return t('reason.onlyDrawn');
+  if (g.pending.type === 'wildColor') return t('reason.takeUntil', { color: colorName(g.pending.color) });
   if (g.pending.count > 0) return t(g.settings.stacking ? 'reason.stack' : 'reason.take', { n: g.pending.count });
   const top = g.top;
   const value = isNaN(Number(top.value)) ? t(`value.${top.value}`) : top.value;
@@ -1624,7 +1826,7 @@ async function playCards(ids, extra = {}) {
   if (!first || app.busy) return false;
   const opts = { cardIds: ids, uno: Boolean(extra.uno || app.unoArmed) };
   if (first.color === 'wild') {
-    const color = await pickColor(g.hand, ids);
+    const color = await pickColor(g.hand, ids, g.colors);
     if (!color) return false;
     opts.color = color;
   }
@@ -1635,19 +1837,22 @@ async function playCards(ids, extra = {}) {
   }
   clearSel();
   app.busy = true;
-  const ok = await act('play', opts);
+  let ok = await act('play', opts, { quiet: err => err.code === 'pickColor' && err.params?.flip });
+  if (ok instanceof Error) {
+    // the Flip turned up a wild: its color is ours to pick, from the new side
+    const color = await pickColor([], [], ok.params.colors, true);
+    ok = color ? await act('play', { ...opts, flipColor: color }) : false;
+  }
   app.busy = false;
   if (ok) app.unoArmed = false;
   return ok;
 }
 
-function pickColor(hand, played) {
-  const counts = { red: 0, yellow: 0, green: 0, blue: 0 };
+function pickColor(hand, played, colors, flip = false) {
+  const counts = Object.fromEntries(colors.map(c => [c, 0]));
   for (const c of hand) if (!played.includes(c.id) && counts[c.color] !== undefined) counts[c.color]++;
-  for (const btn of $$('#modal-color .cbtn')) {
-    const col = btn.dataset.color;
-    btn.innerHTML = `${esc(cap(colorName(col)))}<span class="count">${esc(t('picker.inHand', { n: counts[col] }))}</span>`;
-  }
+  $('#modal-color h2').textContent = t(flip ? 'modal.pickColorFlip' : 'modal.pickColor');
+  $('#modal-color .color-grid').innerHTML = colors.map(col => `<button data-color="${col}" class="cbtn ${col}">${esc(cap(colorName(col)))}${flip ? '' : `<span class="count">${esc(t('picker.inHand', { n: counts[col] }))}</span>`}</button>`).join('');
   return openPicker('color');
 }
 
@@ -1748,7 +1953,9 @@ function showResults(celebrate) {
           const cards = left.length
             ? `<div class="left-cards">${left.slice(0, 16).map(c => createCard(c).outerHTML).join('')}${left.length > 16 ? `<small>+${left.length - 16}</small>` : ''}</div>`
             : `<b>${esc(place ? t('seat.place', { n: place }) : t('res.out'))}</b>`;
-          return `<td>${cards}</td><td class="num">${id in awarded ? `+${awarded[id]}` : ''}</td>`;
+          const bonus = (r.bonuses?.[id] || []).reduce((sum, b) => sum + b.points, 0);
+          const gained = (awarded[id] || 0) + bonus;
+          return `<td>${cards}${bonus ? `<div class="bonus-row">${bonusChips(r.bonuses[id])}</div>` : ''}</td><td class="num">${id in awarded || bonus ? `+${gained}` : ''}</td>`;
         })}
       </tbody></table>`;
     $$('#results-body tr').forEach(tr => tr.classList.toggle('winner', tr.dataset.id === r.winner));
@@ -1993,7 +2200,11 @@ function wire() {
     }
   });
   $('#draw-pile').addEventListener('click', () => { if (app.state?.game?.canDraw) act('draw'); });
-  $('#btn-draw').addEventListener('click', () => act('draw'));
+  $('#btn-draw').addEventListener('click', e => {
+    const g = app.state?.game;
+    if (touchScreen.matches && g?.playable.length && !g.pending.count && !confirmTap(e.currentTarget, t('confirm.draw'))) return;
+    act('draw');
+  });
   $('#btn-pass').addEventListener('click', () => act('pass'));
   $('#btn-challenge').addEventListener('click', () => act('challenge'));
   $('#btn-uno').addEventListener('click', pressUno);
@@ -2010,8 +2221,11 @@ function wire() {
   });
   $('#opponents').addEventListener('click', e => {
     const c = e.target.closest('[data-catch]');
-    if (c) act('catch', { target: c.dataset.catch });
+    if (c) { act('catch', { target: c.dataset.catch }); return; }
+    const seat = e.target.closest('.seat');
+    if (seat) toggleBacks(seat);
   });
+  document.addEventListener('pointerdown', e => { if (!e.target.closest('.seat, .backs-pop')) closeBacks(); });
 
   $('#modal-color').addEventListener('click', e => {
     const b = e.target.closest('[data-color]');
@@ -2056,6 +2270,10 @@ function wire() {
       case 'rules': closeModal('menu'); openModal('rules'); break;
       case 'mute': setMuted(!isMuted()); updateMuteButtons(); if (!isMuted()) sfx.turn(); break;
       case 'chat': toggleDrawer(); break;
+      case 'rotate-lock': lockLandscape(); break;
+      case 'rotate-skip': skipRotate(); break;
+      case 'voice': if (voice.on) voice.leave(); else voice.join(); break;
+      case 'mic': voice.toggleMute(); break;
       case 'scores': showScoreboard(); break;
       case 'menu':
         $('#btn-end-game').classList.toggle('hidden', !isHost());
@@ -2105,9 +2323,10 @@ function wire() {
       else if (app.drawerOpen) toggleDrawer(false);
       return;
     }
+    const k = e.key.toLowerCase();
+    if (k === 'v' && voice.on) { voice.toggleMute(); return; }
     const g = app.state?.game;
     if (!g) return;
-    const k = e.key.toLowerCase();
     if (k === 'd' && g.canDraw) act('draw');
     else if (k === 'p' && g.canPass) act('pass');
     else if (k === 'u') pressUno();

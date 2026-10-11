@@ -14,6 +14,7 @@
   <!-- ============ HOME ============ -->
   <section id="screen-home" class="screen">
     <button class="btn ghost sm lang-btn home-lang" data-action="lang" data-i18n-title="title.language"></button>
+    <a class="btn ghost sm home-hub" href="/" data-i18n="home.allGames"></a>
     <div class="home">
       <div class="logo-wrap">
         <div class="logo-cards" aria-hidden="true"><i class="lc r"></i><i class="lc y"></i><i class="lc g"></i><i class="lc b"></i></div>
@@ -52,6 +53,8 @@
         <button class="btn ghost sm lang-btn" data-action="lang" data-i18n-title="title.language"></button>
         <button class="btn ghost icon" data-action="rules" data-i18n-title="title.rules">?</button>
         <button class="btn ghost icon mute-btn" data-action="mute" data-i18n-title="title.sound"></button>
+        <button class="btn ghost icon voice-btn" data-action="voice" data-i18n-title="voice.join">🎧</button>
+        <button class="btn ghost icon mic-btn hidden" data-action="mic">🎙️</button>
         <button class="btn ghost icon chat-btn" data-action="chat" data-i18n-title="title.chat">💬<span class="badge hidden"></span></button>
       </div>
     </header>
@@ -92,6 +95,8 @@
       </div>
       <div class="tb-right">
         <button class="btn icon" data-action="scores" data-i18n-title="title.scores">🏆</button>
+        <button class="btn icon voice-btn" data-action="voice" data-i18n-title="voice.join">🎧</button>
+        <button class="btn icon mic-btn hidden" data-action="mic">🎙️</button>
         <button class="btn icon chat-btn" data-action="chat" data-i18n-title="title.chat">💬<span class="badge hidden"></span></button>
       </div>
     </header>
@@ -201,6 +206,17 @@
       <h2 data-i18n="rules.title"></h2>
       <div class="rules" data-i18n-html="rules.html"></div>
       <div class="modal-actions"><button class="btn primary" data-close data-i18n="rules.ok"></button></div>
+    </div>
+  </div>
+
+  <!-- phones held upright: suggest turning sideways (bigger table, cards further from the buttons) -->
+  <div id="rotate-hint" class="rotate-hint hidden" role="dialog" data-i18n-aria="rotate.title">
+    <div class="rotate-box">
+      <div class="rotate-phone" aria-hidden="true"><i></i></div>
+      <h2 data-i18n="rotate.title"></h2>
+      <p data-i18n="rotate.text"></p>
+      <button class="btn primary big" data-action="rotate-lock" data-i18n="rotate.lock"></button>
+      <button class="btn ghost sm" data-action="rotate-skip" data-i18n="rotate.skip"></button>
     </div>
   </div>
 

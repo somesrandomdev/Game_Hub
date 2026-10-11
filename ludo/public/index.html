@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f4ecdc">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Ludo Night</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='4' width='56' height='56' rx='8' fill='%23fff' stroke='%231d1a16' stroke-width='4'/%3E%3Crect x='6' y='6' width='22' height='22' fill='%23e5322d'/%3E%3Crect x='36' y='6' width='22' height='22' fill='%232f9e4f'/%3E%3Crect x='36' y='36' width='22' height='22' fill='%23f5b800'/%3E%3Crect x='6' y='36' width='22' height='22' fill='%231f6fd1'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/shared/base.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body data-screen="home">
+  <!-- ============ HOME ============ -->
+  <section id="screen-home" class="screen">
+    <a class="btn ghost sm home-hub" href="/" data-i18n="home.allGames"></a>
+    <button class="btn ghost sm lang-btn home-lang" data-action="lang" data-i18n-title="title.language"></button>
+    <div class="home">
+      <div class="logo-wrap">
+        <div class="logo-pawns" aria-hidden="true"><i class="pawn-icon red"></i><i class="pawn-icon green"></i><i class="pawn-icon yellow"></i><i class="pawn-icon blue"></i></div>
+        <h1 class="logo">Ludo<span>night</span></h1>
+        <p class="tagline" data-i18n="home.tagline"></p>
+      </div>
+
+      <div class="panel home-panel">
+        <label class="field">
+          <span data-i18n="home.name"></span>
+          <input id="name-input" maxlength="16" autocomplete="nickname" data-i18n-placeholder="home.namePh" spellcheck="false">
+        </label>
+        <button id="btn-create" class="btn primary big" data-i18n="home.create"></button>
+        <div class="divider"><span data-i18n="home.or"></span></div>
+        <form id="join-form" class="join-row">
+          <input id="code-input" maxlength="4" placeholder="CODE" autocomplete="off" spellcheck="false" data-i18n-aria="home.code">
+          <button class="btn" type="submit" data-i18n="home.join"></button>
+        </form>
+        <div id="room-list" class="room-list"></div>
+      </div>
+
+      <div class="panel home-panel subtle">
+        <h3 data-i18n="home.friendsFrom"></h3>
+        <div id="home-addresses" class="addresses"><span class="muted" data-i18n="home.lookingUp"></span></div>
+        <button class="btn ghost sm" data-action="rules" data-i18n="home.howTo"></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ LOBBY ============ -->
+  <section id="screen-lobby" class="screen hidden">
+    <header class="topbar">
+      <button class="btn ghost sm" data-action="leave" data-i18n="top.leave"></button>
+      <div class="room-code"><small data-i18n="top.room"></small><strong id="lobby-code">----</strong></div>
+      <div class="tb-right">
+        <button class="btn ghost sm lang-btn" data-action="lang" data-i18n-title="title.language"></button>
+        <button class="btn ghost icon" data-action="rules" data-i18n-title="title.rules">?</button>
+        <button class="btn ghost icon mute-btn" data-action="mute" data-i18n-title="title.sound"></button>
+        <button class="btn ghost icon voice-btn" data-action="voice" data-i18n-title="voice.join">🎧</button>
+        <button class="btn ghost icon mic-btn hidden" data-action="mic">🎙️</button>
+        <button class="btn ghost icon chat-btn" data-action="chat" data-i18n-title="title.chat">💬<span class="badge hidden"></span></button>
+      </div>
+    </header>
+    <div class="lobby">
+      <div class="panel">
+        <h2><span data-i18n="lobby.players"></span> <span id="lobby-count" class="pill"></span></h2>
+        <ul id="lobby-players" class="player-list"></ul>
+        <button id="btn-add-bot" class="btn sm" data-i18n="lobby.addBot"></button>
+        <p id="lobby-tables" class="lobby-tables"></p>
+      </div>
+      <div class="panel">
+        <h2><span data-i18n="lobby.rules"></span> <span id="rules-lock" class="pill muted"></span></h2>
+        <form id="settings-form" class="settings" onsubmit="return false"></form>
+      </div>
+      <div class="panel">
+        <h2 data-i18n="lobby.invite"></h2>
+        <div id="lobby-qr" class="qr hidden">
+          <div class="qr-img"></div>
+          <p class="muted small" data-i18n="lobby.scan"></p>
+        </div>
+        <p class="muted small" data-i18n="lobby.inviteHint"></p>
+        <div id="lobby-addresses" class="addresses"></div>
+        <p class="muted small"><span data-i18n="lobby.orCode"></span> <b id="lobby-code-2"></b>.</p>
+      </div>
+    </div>
+    <footer class="lobby-foot">
+      <button id="btn-start" class="btn primary big" data-i18n="lobby.startGame"></button>
+      <p id="lobby-wait" class="muted"></p>
+    </footer>
+  </section>
+
+  <!-- ============ GAME ============ -->
+  <section id="screen-game" class="screen hidden">
+    <header class="topbar">
+      <button class="btn icon" data-action="menu" data-i18n-title="title.menu">☰</button>
+      <div class="tb-mid">
+        <span class="tb-code"><span data-i18n="game.room"></span> <b id="g-code"></b></span>
+        <span id="g-round" class="tb-round"></span>
+      </div>
+      <div class="tb-right">
+        <button class="btn icon" data-action="intro" data-i18n-title="title.rules">?</button>
+        <button class="btn icon voice-btn" data-action="voice" data-i18n-title="voice.join">🎧</button>
+        <button class="btn icon mic-btn hidden" data-action="mic">🎙️</button>
+        <button class="btn icon chat-btn" data-action="chat" data-i18n-title="title.chat">💬<span class="badge hidden"></span></button>
+      </div>
+    </header>
+
+    <div class="game-wrap">
+      <div id="board-area" class="board-area">
+        <div id="watch-bar" class="watch-bar hidden"></div>
+        <div id="board" class="board"></div>
+      </div>
+
+      <aside class="side">
+        <div class="panel control" id="control">
+          <div id="turn-line" class="turn-line"></div>
+          <div class="roll-row">
+            <button id="die" class="die big-die" data-act="roll" disabled aria-label="Roll"></button>
+            <div class="roll-text">
+              <div id="status" class="status"></div>
+              <p id="explain" class="explain"></p>
+            </div>
+          </div>
+          <div id="timer" class="timer hidden"><i></i></div>
+          <ol id="story" class="story" aria-live="polite"></ol>
+        </div>
+
+        <div class="panel">
+          <h3 class="side-h"><span data-i18n="side.standings"></span> <span id="target-pill" class="pill"></span></h3>
+          <ol id="standings" class="standings"></ol>
+        </div>
+
+        <div class="panel" id="tables-panel">
+          <h3 class="side-h" data-i18n="side.tables"></h3>
+          <div id="tables" class="tables"></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ============ CHAT DRAWER ============ -->
+  <aside id="drawer" class="drawer" data-i18n-aria="drawer.chat">
+    <div class="drawer-tabs">
+      <button class="tab active" data-tab="chat" data-i18n="drawer.chat"></button>
+      <button class="tab" data-tab="log" data-i18n="drawer.log"></button>
+      <button class="btn ghost icon close" data-action="chat" data-i18n-title="drawer.close">✕</button>
+    </div>
+    <div id="chat-list" class="feed"></div>
+    <div id="log-list" class="feed hidden"></div>
+    <div id="reactions" class="reactions"></div>
+    <form id="chat-form" class="chat-form">
+      <input id="chat-input" maxlength="240" data-i18n-placeholder="chat.placeholder" autocomplete="off">
+      <button class="btn sm" type="submit" data-i18n="chat.send"></button>
+    </form>
+  </aside>
+
+  <!-- ============ MODALS ============ -->
+  <div id="modal-results" class="modal hidden" role="dialog">
+    <div class="modal-box">
+      <div id="results-body"></div>
+      <div id="results-actions" class="modal-actions"></div>
+    </div>
+  </div>
+
+  <div id="modal-menu" class="modal hidden" role="dialog" data-i18n-aria="menu.title">
+    <div class="modal-box small">
+      <h2 data-i18n="menu.title"></h2>
+      <div class="menu-list">
+        <button class="btn" data-action="lang"><span class="lang-btn"></span></button>
+        <button class="btn" data-action="rules" data-i18n="menu.rules"></button>
+        <button class="btn mute-btn" data-action="mute"></button>
+        <button class="btn" data-action="fx" id="btn-fx"></button>
+        <button class="btn" data-action="fullscreen" data-i18n="menu.fullscreen"></button>
+        <button class="btn" data-action="end-game" id="btn-end-game" data-i18n="menu.end"></button>
+        <button class="btn danger" data-action="leave" data-i18n="menu.leave"></button>
+      </div>
+      <button class="btn ghost sm" data-close data-i18n="modal.close"></button>
+    </div>
+  </div>
+
+  <div id="modal-intro" class="modal hidden" role="dialog" data-i18n-aria="intro.title">
+    <div class="modal-box intro-box">
+      <h2 data-i18n="intro.title"></h2>
+      <div id="intro-you" class="intro-you"></div>
+      <ol class="intro-steps" data-i18n-html="intro.steps"></ol>
+      <div class="modal-actions">
+        <button class="btn primary big" data-close data-i18n="intro.go"></button>
+        <button class="btn ghost sm" data-action="rules" data-i18n="intro.more"></button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-rules" class="modal hidden" role="dialog" data-i18n-aria="rules.title">
+    <div class="modal-box wide">
+      <h2 data-i18n="rules.title"></h2>
+      <div class="rules" data-i18n-html="rules.html"></div>
+      <div class="modal-actions"><button class="btn primary" data-close data-i18n="rules.ok"></button></div>
+    </div>
+  </div>
+
+  <div id="conn-banner" class="conn-banner hidden" data-i18n="conn.reconnecting"></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

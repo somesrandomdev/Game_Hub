@@ -2,21 +2,23 @@
 
 // Heuristic bot. Also used as "autopilot" for players who time out or drop off.
 
-const { COLORS } = require('./game');
+const { COLORS, DARK_COLORS } = require('./game');
 
-function bestColor(hand, excludeId, rng) {
-  const weight = { red: 0, yellow: 0, green: 0, blue: 0 };
+function bestColor(hand, excludeId, rng, colors = COLORS) {
+  const weight = Object.fromEntries(colors.map(c => [c, 0]));
   for (const c of hand) {
-    if (c.id === excludeId || c.color === 'wild') continue;
+    if (c.id === excludeId || !(c.color in weight)) continue;
     weight[c.color] += isNaN(Number(c.value)) ? 1.5 : 1;
   }
   let best = null;
   let max = 0;
-  for (const col of COLORS) {
+  for (const col of colors) {
     if (weight[col] > max) { max = weight[col]; best = col; }
   }
-  return best || COLORS[Math.floor(rng() * COLORS.length)];
+  return best || colors[Math.floor(rng() * colors.length)];
 }
+
+const BLOCKERS = new Set(['skip', 'skipAll', 'draw1', 'draw2', 'draw5']);
 
 function chooseMove(game, pid, rng = Math.random) {
   const hand = game.hands[pid];
@@ -45,13 +47,16 @@ function chooseMove(game, pid, rng = Math.random) {
     if (c.color === 'wild') {
       s -= 12; // hold wilds for emergencies
       if (playable.length === 1) s += 30;
-      if (c.value === 'wild4') s += attack ? 40 : -4;
+      if (c.value === 'wild4' || c.value === 'wild2') s += attack ? 40 : -4;
+      if (c.value === 'wildColor') s += attack ? 45 : 0;
     } else {
       s += sameColor(c.color) * 3;
       if (game.settings.multiPlay) s += (hand.filter(x => x.value === c.value).length - 1) * 4;
-      const blocks = c.value === 'skip' || c.value === 'draw2' || (c.value === 'reverse' && opponents.length === 1);
+      const blocks = BLOCKERS.has(c.value) || (c.value === 'reverse' && opponents.length === 1);
       if (blocks) s += attack ? 25 : 5;
-      if (c.value === 'draw2') s += 3;
+      if (c.value === 'draw2' || c.value === 'draw5') s += 3;
+      if (c.value === 'skipAll') s += 6; // a free extra turn
+      if (c.value === 'flip') s += attack ? 8 : 0; // shake things up when someone's close
       if (!isNaN(Number(c.value))) s += Number(c.value) * 0.4; // shed points
     }
     if (game.settings.sevenZero && c.value === '7' && hand.length > 1) {
@@ -68,7 +73,10 @@ function chooseMove(game, pid, rng = Math.random) {
   const twins = game.settings.multiPlay ? hand.filter(c => c.value === best.value && c.id !== best.id) : [];
   const ids = [best.id, ...twins.map(c => c.id)];
   const move = { type: 'play', cardId: ids.length > 1 ? ids : best.id };
-  if (best.color === 'wild') move.color = bestColor(hand.filter(c => !ids.includes(c.id)), null, rng);
+  const rest = hand.filter(c => !ids.includes(c.id));
+  if (best.color === 'wild') move.color = bestColor(rest, null, rng, game.colors);
+  // in case the Flip turns up a wild: pick from what the hand will look like afterwards
+  if (best.value === 'flip') move.flipColor = bestColor(rest.map(c => ({ id: c.id, ...c.back })), null, rng, game.side === 'dark' ? COLORS : DARK_COLORS);
   if (game.settings.sevenZero && best.value === '7' && hand.length > ids.length) move.target = fewest;
   return move;
 }

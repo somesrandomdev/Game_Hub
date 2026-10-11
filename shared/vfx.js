@@ -1,7 +1,8 @@
 // Game-feel effects: one full-screen canvas for particles and shockwaves, plus DOM
 // effects (arc flights with a 3D flip, shouts, stamps, color waves, screen shake).
-// Everything is skipped when motion is reduced: that follows the system setting until the
-// player flips the ✨ switch in the menu (remembered per device).
+// Shared by every game (styles in shared/base.css). Everything is skipped when motion is
+// reduced: that follows the system setting until the player flips the ✨ switch in a game's
+// menu (remembered per device, for all games: the key keeps its old UNO name).
 
 const systemCalm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 let stored = null;
@@ -22,7 +23,10 @@ const BASE_QUALITY = lowEnd ? 0.6 : 1;
 export const perf = { quality: BASE_QUALITY };
 const scaled = n => Math.max(1, Math.round(n * perf.quality));
 
-export const PALETTE = { red: '#ff5a52', yellow: '#ffd23f', green: '#3ddc84', blue: '#4ea1ff', wild: '#ffffff' };
+export const PALETTE = {
+  red: '#ff5a52', yellow: '#ffd23f', green: '#3ddc84', blue: '#4ea1ff', wild: '#ffffff',
+  pink: '#ff5cb8', teal: '#2ee6d6', orange: '#ff9a3c', purple: '#b388ff',
+};
 const RAINBOW = [PALETTE.red, PALETTE.yellow, PALETTE.green, PALETTE.blue];
 export const colorsFor = color => (color && PALETTE[color] && color !== 'wild' ? [PALETTE[color], '#ffffff'] : RAINBOW);
 

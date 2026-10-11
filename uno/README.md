@@ -1,34 +1,16 @@
 # UNO Night 🃏
 
-Browser UNO for 2–10 players on the same Wi-Fi or hotspot. **No internet needed and nothing to install** except Node.js on the PC that hosts.
+Browser UNO for 2–10 players on the same Wi-Fi or hotspot, one of the [Game Night](../README.md) games.
 
-## Play in 30 seconds
+## Play
 
-1. On the host PC, double-click **`start.bat`**. It opens the game and prints addresses like `http://192.168.1.8:3000`.
-2. Your friend joins the **same network**:
-   - same Wi-Fi router (it doesn't need internet), **or**
-   - no router? Turn on **Windows Mobile Hotspot** (Settings → Network & internet → Mobile hotspot) and have them connect to it. The address will look like `http://192.168.137.1:3000`.
-3. Your friend opens that address in any browser (PC or phone), types a name and joins your room code. Open rooms also show up on the home screen.
-4. If Windows Firewall shows a popup, click **Allow**. If your friend still can't connect, run **`allow-firewall.bat`** once (it asks for admin rights).
-
-Or from a terminal: `node server.js` (optional port: `node server.js 8080`).
-
-## Play online (friends at home)
-
-1. On the host PC, double-click **`start-online.bat`** (or run `node server.js --online`).
-2. The first time, it downloads Cloudflare's free `cloudflared` tool into `bin/` (~20 MB). You don't need an account, router changes or firewall changes.
-3. After a few seconds the window prints a link like `https://some-random-words.trycloudflare.com`. It also appears in the lobby as the 🌍 link, with a QR code.
-4. Send that link to your friends. They open it, type a name and join your room.
-
-Notes:
-- The game still runs on your PC, so keep the window open and the PC awake. Close the window to take the game offline.
-- You get a **new link every time** you start it. If the connection drops it reconnects with a new link (shown in the window and the lobby).
-- Anyone who has the link can open the game, so only share it with friends.
-- macOS: install the tool first with `brew install cloudflared`.
+UNO runs on the Game Night server at the repo root: double-click **`start.bat`** there (or run `node server.js`), pick **UNO** on the home page, and share the address it prints. See the [main README](../README.md) for hotspots, firewall and the online link.
 
 ## Features
 
 - Full official rules: Skip, Reverse, Draw Two, Wild, Wild Draw Four with **challenges**, UNO calls with **Catch!** penalties, scoring to a target
+- **UNO Flip** (lobby option): two-sided cards with a light and a dark side. Flip turns every card over; the dark side brings Draw Five, Skip Everyone and Wild Draw Color. You can see the other side of everyone else's cards
+- **Voice chat** 🎧: talk with the table (peer-to-peer WebRTC, the server only relays the setup). The mic needs the https online link or the server PC itself; on a plain LAN address you can listen only
 - **Multi-card play**: drop several cards of the same number/symbol at once, any colors (on by default)
 - **Last one standing**: going out doesn't end the round; the last player holding cards scores 0, the others 50 pts per player still in when they went out (on by default)
 - **QR code** in the lobby so phones can join in one scan
@@ -41,16 +23,17 @@ Notes:
 - Chat, emoji reactions, game log, sounds generated in code, animations, confetti
 - **English & French** 🌐: each player picks their own language (French browsers get it automatically)
 - Works on phones (fullscreen option in the ☰ menu)
-- Keyboard: `D` draw · `P` pass · `U` UNO · `C` challenge · `S` sort · `T` chat · `Esc` close
+- Keyboard: `D` draw · `P` pass · `U` UNO (press it before playing to call UNO with your play) · `C` challenge · `S` sort · `T` chat · `V` mute mic · `Esc` close
 
 ## Project layout
 
 ```
-server.js          HTTP server, rooms, Server-Sent Events, bots/timers
+src/plugin.js      what the hub server needs to run UNO (moves, bot timing)
 src/game.js        pure UNO rules engine
 src/ai.js          bot / autopilot strategy
-public/            the browser client (HTML, CSS, JS; no build step, no CDN)
-test/              engine unit tests, 300 simulated games, end-to-end server tests
+src/messages.js    UNO's server messages
+public/            the browser client, served at /uno/ (HTML, CSS, JS; no build step, no CDN)
+test/              engine unit tests, 300 simulated games, translations
 ```
 
-Run the tests with `npm test`.
+The server, voice chat and other shared pieces live at the repo root. Run every test with `npm test` there.
