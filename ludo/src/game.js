@@ -18,6 +18,14 @@ const SAFE = new Set([0, 13, 26, 39, 8, 21, 34, 47]);
 const POINTS = { 1: [3], 2: [3, 0], 3: [3, 1, 0], 4: [3, 2, 1, 0] };
 // which seats a table of n uses (two players sit opposite each other)
 const SEATS = { 1: [0], 2: [0, 2], 3: [0, 1, 2], 4: [0, 1, 2, 3] };
+// Raids: a piece in its home column can be caught by an opponent that rolls exactly
+// onto it. The raider then sits in that lane and only backs out one square per 6 or 1.
+// A raider in the lane of seat s, square c (1..5), is stored as RAID + s * 10 + c.
+const RAID = 100;
+const LANE = HOME - LAST_TRACK - 1;  // squares in a home column
+const isRaid = p => p >= RAID;
+const raidSeat = p => Math.floor((p - RAID) / 10);
+const raidCell = p => (p - RAID) % 10;
 
 const DEFAULT_SETTINGS = {
   target: 10,        // points to win the tournament
@@ -57,6 +65,21 @@ function absOf(seat, progress) {
   if (progress < 0 || progress > LAST_TRACK) return null;
   return (seat * SEAT_OFFSET + progress) % TRACK;
 }
+
+// Progress of `seat` on the last track square before `lane`'s home column.
+function laneEntry(seat, lane) {
+  return ((lane - seat) * SEAT_OFFSET + LAST_TRACK + TRACK) % TRACK;
+}
+
+// Where a piece can be captured: a shared square or a lane square; null if it can't be.
+function spotOf(seat, p) {
+  if (isRaid(p)) return `lane${raidSeat(p)}:${raidCell(p)}`;
+  if (p > LAST_TRACK && p < HOME) return `lane${seat}:${p - LAST_TRACK}`;
+  const abs = absOf(seat, p);
+  return abs === null || SAFE.has(abs) ? null : `track${abs}`;
+}
+
+const range = (a, b) => Array.from({ length: Math.max(0, b - a + 1) }, (_, i) => a + i);
 
 // As even as possible, never more than 4: 5 -> 3+2, 9 -> 3+3+3, 13 -> 4+3+3+3.
 function tableSizes(n) {
@@ -149,6 +172,7 @@ class LudoGame {
         die: null,
         rolled: false,
         movable: [],
+        raids: [],
         sixes: 0,
         finished: [],
         done: false,
@@ -182,7 +206,25 @@ class LudoGame {
   legalMoves(t, pid, d) {
     const out = [];
     t.pieces[pid].forEach((p, k) => {
-      if (p === -1 ? d === 6 : p < HOME && p + d <= HOME) out.push(k);
+      if (isRaid(p) ? d === 6 || d === 1 : p === -1 ? d === 6 : p < HOME && p + d <= HOME) out.push(k);
+    });
+    return out;
+  }
+
+  // Pieces on the track that can roll exactly onto an opponent in its home column.
+  raidsFor(t, pid, d) {
+    const out = [];
+    const seat = t.seat[pid];
+    t.pieces[pid].forEach((p, k) => {
+      if (p < 0 || p > LAST_TRACK) return;
+      for (const q of t.players) {
+        if (q === pid) continue;
+        const entry = laneEntry(seat, t.seat[q]);
+        const cell = p + d - entry;
+        if (entry < p || cell < 1 || cell > LANE) continue;
+        const j = t.pieces[q].indexOf(LAST_TRACK + cell);
+        if (j !== -1) out.push({ piece: k, victim: q, victimPiece: j });
+      }
     });
     return out;
   }
@@ -199,44 +241,61 @@ class LudoGame {
       return;
     }
     const moves = this.legalMoves(t, pid, d);
-    if (!moves.length) {
+    const raids = this.raidsFor(t, pid, d);
+    if (!moves.length && !raids.length) {
       this.emit('noMove', { table: t.id, player: pid, value: d });
       this.nextTurn(t);
       return;
     }
     t.rolled = true;
     t.movable = moves;
+    t.raids = raids;
     this.touch(t);
-    // only one real choice (all pieces in the yard count as one): play it
+    // only one real choice (all pieces in the yard count as one): play it.
+    // A raid is never played for you: catching someone is the player's call.
     const distinct = new Set(moves.map(k => t.pieces[pid][k]));
-    if (distinct.size === 1) this.move(pid, moves[0]);
+    if (distinct.size === 1 && !raids.length) this.move(pid, moves[0]);
   }
 
-  move(pid, k) {
+  // raid: break into an opponent's home column to catch the piece there
+  move(pid, k, raid = false) {
     const t = this.assertTurn(pid);
     if (!t.rolled) throw new GameError('rollFirst');
     k = Number(k);
-    if (!t.movable.includes(k)) throw new GameError('cantMove');
+    const r = raid ? t.raids.find(x => x.piece === k) : null;
+    if (raid ? !r : !t.movable.includes(k)) throw new GameError('cantMove');
     const d = t.die;
+    const seat = t.seat[pid];
     const pieces = t.pieces[pid];
     const from = pieces[k];
-    const to = from === -1 ? 0 : from + d;
+    let to = from === -1 ? 0 : from + d;
+    let path = null;  // squares walked, when they don't simply count up
+    if (r) {
+      const lane = t.seat[r.victim];
+      to = RAID + lane * 10 + t.pieces[r.victim][r.victimPiece] - LAST_TRACK;
+      path = [...range(from + 1, laneEntry(seat, lane)), ...range(RAID + lane * 10 + 1, to)];
+    } else if (isRaid(from)) {
+      // a raider backs out one square, then it's back on the track
+      to = raidCell(from) > 1 ? from - 1 : laneEntry(seat, raidSeat(from));
+      path = [to];
+    }
     pieces[k] = to;
     t.rolled = false;
     t.movable = [];
-    this.emit('move', { table: t.id, player: pid, piece: k, from, to });
+    t.raids = [];
+    this.emit('move', { table: t.id, player: pid, piece: k, from, to, ...(path && { path }), ...(r && { raid: r.victim }) });
 
     // landing on someone outside a safe square sends them back to their yard
     let captured = 0;
-    const abs = absOf(t.seat[pid], to);
-    if (abs !== null && !SAFE.has(abs)) {
+    const where = spotOf(seat, to);
+    if (where) {
       for (const q of t.players) {
         if (q === pid) continue;
         t.pieces[q].forEach((p, j) => {
-          if (absOf(t.seat[q], p) === abs) {
+          if (spotOf(t.seat[q], p) === where) {
             t.pieces[q][j] = -1;
             captured++;
-            this.emit('capture', { table: t.id, player: pid, victim: q, piece: j, square: abs });
+            this.emit('capture', { table: t.id, player: pid, victim: q, piece: j, square: absOf(seat, to) });
           }
         });
       }
@@ -268,6 +327,7 @@ class LudoGame {
     t.sixes = 0;
     t.rolled = false;
     t.movable = [];
+    t.raids = [];
     const n = t.players.length;
     for (let s = 0; s < n; s++) {
       t.turn = (t.turn + 1) % n;
@@ -279,7 +339,7 @@ class LudoGame {
 
   // How far along a player is: what decides the places of everyone who didn't finish.
   progress(t, pid) {
-    return t.pieces[pid].reduce((s, p) => s + (p < 0 ? 0 : p + 1), 0);
+    return t.pieces[pid].reduce((s, p) => s + (p < 0 ? 0 : isRaid(p) ? laneEntry(t.seat[pid], raidSeat(p)) + 1 : p + 1), 0);
   }
 
   endTable(t) {
@@ -295,6 +355,7 @@ class LudoGame {
     t.done = true;
     t.rolled = false;
     t.movable = [];
+    t.raids = [];
     this.emit('tableDone', { table: t.id, places: t.places });
     if (this.tables.every(x => x.done)) this.endRound();
   }
@@ -377,6 +438,7 @@ class LudoGame {
         die: t.die,
         rolled: t.rolled,
         movable: t.movable,
+        raids: t.raids,
         sixes: t.sixes,
         done: t.done,
         places: t.places,
@@ -385,6 +447,7 @@ class LudoGame {
       myTable: mine ? mine.id : null,
       canRoll: myTurn && !mine.rolled,
       canMove: myTurn && mine.rolled ? mine.movable : [],
+      canRaid: myTurn && mine.rolled ? mine.raids : [],
       roundEndedAt: this.roundEndedAt,
       lastRound: this.lastRound,
       winner: this.winner,
@@ -394,6 +457,6 @@ class LudoGame {
 }
 
 module.exports = {
-  LudoGame, GameError, DEFAULT_SETTINGS, OPTIONS, sanitizeSettings, absOf, tableSizes,
-  COLORS, SAFE, HOME, LAST_TRACK, TRACK, POINTS, STAR,
+  LudoGame, GameError, DEFAULT_SETTINGS, OPTIONS, sanitizeSettings, absOf, tableSizes, laneEntry,
+  isRaid, raidSeat, raidCell, COLORS, SAFE, HOME, LAST_TRACK, TRACK, POINTS, STAR, RAID,
 };

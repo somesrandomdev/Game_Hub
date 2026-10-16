@@ -7,6 +7,9 @@ const { chooseMove, applyMove } = require('./ai');
 require('./messages');
 
 const AWAY_GRACE_MS = 10000;     // autopilot kicks in this long after someone drops
+// After a play leaves someone on one card, nobody can catch them for this long. A press of
+// UNO! a split second late (or a call that overtakes the play on the network) still counts.
+const UNO_GRACE_MS = 1500;
 
 module.exports = {
   id: 'uno',
@@ -29,7 +32,10 @@ module.exports = {
       case 'pass': g.pass(m.id); return true;
       case 'challenge': g.challengeDraw4(m.id); return true;
       case 'uno': return g.callUno(m.id);
-      case 'catch': g.catchUno(m.id, body.target); return true;
+      case 'catch':
+        if (g.vulnerable.has(body.target) && Date.now() - g.vulnerableAt < UNO_GRACE_MS) throw new GameError('tooEarly');
+        g.catchUno(m.id, body.target);
+        return true;
       default: throw new GameError('unknownAction');
     }
   },
@@ -44,7 +50,7 @@ module.exports = {
     const key = `turn:${g.id}:${g.seq}`;
     if (m && m.isBot) {
       at(plan(key, () => Date.now() + 650 + Math.random() * 700), () => autoMove(room, cur));
-    } else if (m && !m.connected) {
+    } else if (m && (!m.connected || m.autoplay)) {
       at(plan(`${key}:away`, () => Math.max(Date.now() + 1200, (m.disconnectedAt || 0) + AWAY_GRACE_MS)), () => autoMove(room, cur, 'away'));
     } else if (g.settings.turnTimer > 0) {
       at(g.turnStartedAt + g.settings.turnTimer * 1000, () => autoMove(room, cur, 'timeout'));
@@ -61,7 +67,7 @@ module.exports = {
       }
       const catchers = bots.filter(b => b.id !== vid);
       if (catchers.length) {
-        const when = plan(`catch:${vid}:${vseq}`, () => (Math.random() < 0.6 ? Date.now() + 500 + Math.random() * 1200 : null));
+        const when = plan(`catch:${vid}:${vseq}`, () => (Math.random() < 0.6 ? Math.max(Date.now(), g.vulnerableAt + UNO_GRACE_MS) + 200 + Math.random() * 1200 : null));
         if (when) {
           at(when, () => {
             if (!g.vulnerable.has(vid)) return;

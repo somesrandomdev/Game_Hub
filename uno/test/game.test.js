@@ -129,6 +129,25 @@ test('draw two makes the next player draw and lose their turn', () => {
   assert.equal(g.current, 'c');
 });
 
+test('a +2 played as the last card can still be stacked on', () => {
+  const d1 = card('red', 'draw2');
+  const d2 = card('blue', 'draw2');
+  const g = rig({
+    settings: { stacking: true, lastStanding: true },
+    hands: { a: [d1], b: [d2, card('green', '1')], c: [card('green', '2'), card('green', '3')] },
+    top: card('red', '5'),
+  });
+  g.play('a', d1.id, { uno: true });
+  assert.ok(g.isOut('a'));
+  assert.deepEqual(g.pending, { count: 2, type: 'draw2' });
+  assert.equal(g.current, 'b');
+  assert.deepEqual(g.view('b').playable, [d2.id]);
+  g.play('b', d2.id);
+  assert.equal(g.current, 'c');
+  g.draw('c');
+  assert.equal(g.hands.c.length, 6);
+});
+
 test('stacking passes the growing penalty along', () => {
   const d1 = card('red', 'draw2');
   const d2 = card('blue', 'draw2');
@@ -806,4 +825,19 @@ test('bonus points: combos, going out on an action card, catching, and win strea
   off.play('a', off.hands.a.slice(0, 3).map(c => c.id));
   assert.equal(off.scores.a, 0);
   assert.equal(off.bonuses.a, undefined);
+});
+
+test('players change seats between rounds', () => {
+  const ids = ['a', 'b', 'c', 'd', 'e'];
+  const g = new UnoGame(ids, { targetScore: 500 }, { rng: seeded(7) });
+  let moved = 0;
+  for (let r = 0; r < 5; r++) {
+    const before = g.players.join();
+    g.endRound(g.players[0]);
+    g.nextRound();
+    assert.deepEqual([...g.players].sort(), ids);
+    if (g.players.join() !== before) moved++;
+    for (const id of ids) assert.ok(g.hands[id].length > 0);
+  }
+  assert.equal(moved, 5);
 });

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { LudoGame, GameError, sanitizeSettings, absOf, tableSizes, HOME } = require('../src/game');
+const { LudoGame, GameError, sanitizeSettings, absOf, tableSizes, HOME, RAID } = require('../src/game');
 const ai = require('../src/ai');
 
 function rngFrom(seed) {
@@ -188,6 +188,79 @@ test('someone leaving mid-round: the table carries on or ends', () => {
   assert.equal(g.phase, 'gameOver'); // one player left in the tournament
 });
 
+test('raid: roll exactly onto a piece in its home column to catch it', () => {
+  const { g, t } = scripted();
+  // a (red) at 22: yellow's lane starts after a's progress 24; b sits on its 2nd lane square
+  t.pieces.a = [22, 10, -1, -1];
+  t.pieces.b = [52, -1, -1, -1];
+  g.rolls.push(4);
+  g.roll('a');
+  assert.deepEqual(t.movable, [0, 1]);
+  assert.deepEqual(t.raids, [{ piece: 0, victim: 'b', victimPiece: 0 }]);
+  throwsCode(() => g.move('a', 1, true), 'cantMove');
+  g.move('a', 0, true);
+  assert.equal(t.pieces.b[0], -1);
+  assert.equal(t.pieces.a[0], RAID + 2 * 10 + 2);
+  assert.equal(g.current(t), 'a'); // a capture: again
+  const ev = g.events.find(e => e.type === 'move' && e.raid);
+  assert.deepEqual(ev.path, [23, 24, RAID + 21, RAID + 22]);
+});
+
+test('raid is a choice: the piece can still just move on', () => {
+  const { g, t } = scripted();
+  t.pieces.a = [22, -1, -1, -1];
+  t.pieces.b = [52, -1, -1, -1];
+  g.rolls.push(4);
+  g.roll('a');
+  assert.equal(t.pieces.a[0], 22); // not played by itself
+  g.move('a', 0);
+  assert.equal(t.pieces.a[0], 26);
+  assert.equal(t.pieces.b[0], 52);
+  // already past the lane: no raid
+  g.rolls.push(1);
+  g.roll('b');
+  g.rolls.push(2);
+  g.roll('a');
+  assert.deepEqual(t.raids, []);
+});
+
+test('a raider backs out one square per 6 or 1, then rejoins the track', () => {
+  const { g, t } = scripted();
+  t.pieces.a = [RAID + 22, -1, -1, -1];
+  t.pieces.b = [10, -1, -1, -1];
+  g.rolls.push(3);
+  g.roll('a');
+  assert.equal(t.pieces.a[0], RAID + 22); // stuck
+  assert.equal(g.current(t), 'b');
+  g.rolls.push(2);
+  g.roll('b');
+  g.rolls.push(1);
+  g.roll('a');
+  assert.equal(t.pieces.a[0], RAID + 21);
+  g.rolls.push(2);
+  g.roll('b');
+  g.rolls.push(6);
+  g.roll('a');
+  g.move('a', 0); // a six could also bring a piece out
+  assert.equal(t.pieces.a[0], 24); // out, on the square before yellow's lane
+  assert.equal(g.current(t), 'a'); // six: again
+  g.rolls.push(3);
+  g.roll('a');
+  assert.equal(t.pieces.a[0], 27);
+});
+
+test('the lane owner can catch a raider', () => {
+  const { g, t } = scripted();
+  t.turn = t.players.indexOf('b');
+  t.pieces.a = [RAID + 23, -1, -1, -1];
+  t.pieces.b = [51, -1, -1, -1];
+  g.rolls.push(2);
+  g.roll('b');
+  assert.equal(t.pieces.b[0], 53);
+  assert.equal(t.pieces.a[0], -1);
+  assert.equal(g.current(t), 'b');
+});
+
 // Bots play whole tournaments: nothing may get stuck.
 test('200 simulated tournaments finish', { timeout: 120000 }, () => {
   for (let seed = 1; seed <= 200; seed++) {
@@ -203,7 +276,7 @@ test('200 simulated tournaments finish', { timeout: 120000 }, () => {
         assert.ok(t, 'a round with every table done should be over');
         const pid = g.current(t);
         assert.ok(ai.act(g, pid), `stuck at table ${t.id}`);
-        for (const x of g.tables) for (const id of x.players) for (const p of x.pieces[id]) assert.ok(p >= -1 && p <= HOME);
+        for (const x of g.tables) for (const id of x.players) for (const p of x.pieces[id]) assert.ok((p >= -1 && p <= HOME) || (p > RAID && p < RAID + 40));
       }
     } finally { Math.random = orig; }
     assert.equal(g.phase, 'gameOver', `seed ${seed} never ended`);

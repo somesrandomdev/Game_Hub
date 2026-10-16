@@ -380,7 +380,6 @@ input::placeholder { color: #b3a993; }
 .ring.low { --ring-c: var(--danger); }
 .turn .ring { opacity: 1; }
 .vulnerable .ring { opacity: 1; --ring-c: var(--danger); }
-.vulnerable .avatar-wrap { animation: shake .5s ease-in-out infinite; }
 .count-badge {
   position: absolute; right: -14px; bottom: -4px; z-index: 2;
   display: flex; align-items: center; gap: 3px;
@@ -417,7 +416,7 @@ input::placeholder { color: #b3a993; }
   background: var(--red); color: #fff; border: var(--line); border-radius: 99px;
   box-shadow: var(--shadow);
   font-weight: 900; font-size: .78rem; padding: 3px 10px; cursor: pointer; z-index: 4;
-  animation: pulseX .7s ease-in-out infinite;
+  animation: popIn .2s ease both;
 }
 .waiting-chip {
   position: absolute; left: 50%; bottom: 2px; translate: -50% 0; pointer-events: auto;
@@ -446,7 +445,7 @@ input::placeholder { color: #b3a993; }
 .pile.draw .card:nth-child(1) { transform: translate(-4px, 4px); }
 .pile.draw .card:nth-child(2) { transform: translate(-2px, 2px); }
 .pile.draw.can { cursor: pointer; }
-.pile.draw.can .card:last-of-type { animation: bob 1.4s ease-in-out infinite; box-shadow: 0 0 0 3px var(--yellow), 0 0 0 5px var(--ink); }
+.pile.draw.can .card:last-of-type { box-shadow: 0 0 0 3px var(--yellow), 0 0 0 5px var(--ink); }
 .pile-count {
   position: absolute; bottom: -22px; left: 50%; translate: -50% 0; text-align: center; white-space: nowrap;
   font-size: .72rem; color: rgba(255,255,255,.7); font-weight: 800;
@@ -456,7 +455,7 @@ input::placeholder { color: #b3a993; }
   background: var(--red); color: #fff; font-family: var(--font-card);
   border: 3px solid var(--ink); border-radius: 50%; width: 46px; height: 46px;
   display: grid; place-items: center; font-size: 1rem;
-  animation: popIn .3s ease both, pulse 1s .3s ease-in-out infinite;
+  animation: popIn .3s ease both;
 }
 .pile.discard .card { position: absolute; inset: 0; transition: transform .2s; }
 .pile.discard .card.under { filter: brightness(.8); }
@@ -523,7 +522,7 @@ input::placeholder { color: #b3a993; }
   animation: popIn .3s ease both;
 }
 .uno-fab:active { transform: translateY(3px); box-shadow: 0 2px 0 var(--ink); }
-.uno-fab.hot { animation: pulse .9s ease-in-out infinite; }
+.uno-fab.hot { box-shadow: 0 5px 0 var(--ink), 0 0 0 4px var(--yellow); }
 .uno-fab.armed { background: var(--yellow, #f5c400); color: var(--ink); -webkit-text-stroke: 0; font-family: var(--font); font-size: 1rem; }
 .uno-fab.done { background: var(--green); font-family: var(--font); font-size: 1rem; -webkit-text-stroke: 0; cursor: default; box-shadow: 0 2px 0 var(--ink); }
 
@@ -817,7 +816,6 @@ input::placeholder { color: #b3a993; }
 
 /* ---------- animations ---------- */
 @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
-@keyframes pulseX { 0%, 100% { transform: translateX(-50%) scale(1); } 50% { transform: translateX(-50%) scale(1.1); } }
 @keyframes shake { 0%, 100% { translate: 0; } 25% { translate: -2px 0; } 75% { translate: 2px 0; } }
 @keyframes flipDir {
   0% { transform: scale(1); }
@@ -980,21 +978,11 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
   border: 3px dashed transparent; pointer-events: none;
   transition: border-color .2s, background .2s, inset .2s;
 }
-.pile.discard.drop-ready::before { border-color: rgba(255,255,255,.6); animation: dropPulse 1s ease-in-out infinite; }
+.pile.discard.drop-ready::before { border-color: rgba(255,255,255,.6); }
 .pile.discard.drop-hot::before { inset: -26px; border-style: solid; border-color: var(--yellow); background: rgba(245,184,0,.15); }
 .pile.discard { transition: transform .2s cubic-bezier(.3,1.5,.5,1); }
 .pile.discard.drop-hot { transform: scale(1.08); }
 
-.hand-wrap.sweep::after {
-  /* light sweeps across your hand when the turn comes to you */
-  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 20;
-  background: linear-gradient(100deg, transparent 35%, rgba(245,184,0,.3) 50%, transparent 65%);
-  background-size: 300% 100%;
-  animation: sweep 1.1s ease-out forwards;
-}
-
-@keyframes dropPulse { 50% { transform: scale(1.05); border-color: #fff; } }
-@keyframes sweep { from { background-position: 100% 0; opacity: 1; } to { background-position: 0 0; opacity: 0; } }
 
 /* dealt backs: many fly at once, keep them cheap */
 .card.lite { box-shadow: 0 0 0 1px var(--ink); }
@@ -1038,7 +1026,7 @@ body[data-side="dark"] { --mat: #2b1a3d; --mat-2: #1e1029; }
 .hand.rows .card { margin-left: 0; transform-origin: 50% 50%; }
 
 /* nothing to play: the Draw button calls you */
-#btn-draw.nudge { background: var(--yellow); animation: pulse .9s ease-in-out infinite; }
+#btn-draw.nudge { background: var(--yellow); }
 .pile.draw .card.other-side .corner { display: none; }
 body.flipping .card { animation: flipOver .6s ease-in-out; }
 @keyframes flipOver { 0% { scale: 1 1; } 50% { scale: 0 1; } 100% { scale: 1 1; } }

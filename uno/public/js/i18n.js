@@ -241,7 +241,7 @@ const en = {
   'toast.timeoutMe': "⏰ Time's up! Autopilot played for you",
   'toast.timeout': '⏰ {name} ran out of time',
   'toast.reshuffle': '♻️ Discard pile shuffled back into the deck',
-  'toast.roundStart': 'Round {n}: deal! 🃏',
+  'toast.roundStart': 'Round {n}: new seats, new deal! 🃏',
   'toast.abandoned': 'Not enough players left to continue',
 
   // ---------- log ----------
@@ -658,7 +658,7 @@ const fr = {
   'toast.timeoutMe': '⏰ Temps écoulé ! Le pilote auto a joué pour toi',
   'toast.timeout': '⏰ {name} a dépassé le temps',
   'toast.reshuffle': '♻️ La défausse est remélangée dans la pioche',
-  'toast.roundStart': 'Manche {n} : distribution ! 🃏',
+  'toast.roundStart': 'Manche {n} : nouvelles places, distribution ! 🃏',
   'toast.abandoned': 'Plus assez de joueurs pour continuer',
 
   // ---------- historique ----------
@@ -801,6 +801,7 @@ const fr = {
   'err.sameValueOnly': 'Les cartes posées ensemble doivent avoir le même chiffre ou symbole',
   'err.catchSelf': 'Tu ne peux pas te dénoncer toi-même : dis UNO !',
   'err.tooLate': 'Trop tard !',
+  'err.tooEarly': 'Laisse-lui une seconde pour dire UNO !',
   'err.hostOnly': 'Seul l\'hôte peut faire ça',
   'err.noGame': 'Aucune partie en cours',
   'err.rulesBetweenGames': 'Change les règles entre deux parties',

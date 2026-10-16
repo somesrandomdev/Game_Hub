@@ -51,6 +51,9 @@ const HOME_SPOT = [[6.55, 7.5], [7.5, 6.55], [8.45, 7.5], [7.5, 8.45]];
 const STARTS = new Set([0, 13, 26, 39]);
 const STARS = new Set([8, 21, 34, 47]);
 const HOME = 56;
+// a piece caught up in someone else's lane (seat s, square c) is RAID + s * 10 + c
+const RAID = 100;
+const isRaid = p => p >= RAID;
 
 const REACTIONS = ['😂', '😡', '😎', '🔥', '👏', '😭', '🤡', '💀', '🙏', '👀'];
 const MAX_PLAYERS = 16;
@@ -617,6 +620,7 @@ const cellCenter = ([x, y]) => [x + 0.5, y + 0.5];
 // where a piece is drawn (unrotated board coordinates, cell units, center)
 function spot(seat, progress, k) {
   if (progress < 0) { const [cx, cy] = YARD[seat]; const [dx, dy] = SLOTS[k]; return [cx + dx, cy + dy]; }
+  if (isRaid(progress)) return cellCenter(HOME_COL[Math.floor((progress - RAID) / 10)][(progress - RAID) % 10 - 1]);
   if (progress <= 50) return cellCenter(PATH[(seat * 13 + progress) % 52]);
   if (progress < HOME) return cellCenter(HOME_COL[seat][progress - 51]);
   return HOME_SPOT[seat];
@@ -661,13 +665,15 @@ function layoutBoard() {
   if (!area || area.offsetParent === null) return;
   const wide = matchMedia('(min-width: 860px), (orientation: landscape) and (min-width: 600px)').matches;
   const bar = $('#watch-bar').offsetHeight || 0;
+  const dock = $('#control').offsetHeight + 8;
   const w = area.clientWidth;
-  const h = wide ? area.clientHeight - bar : window.innerHeight * 0.62;
+  const h = wide ? area.clientHeight - bar - dock : window.innerHeight * 0.6;
   const size = Math.max(260, Math.floor(Math.min(w, h)) - 10);
   // re-placing pieces cuts their walk short: only when the size really changed
   if (size === app.boardSize && $('#pieces')?.childElementCount) return;
   app.boardSize = size;
   $('#board').style.setProperty('--u', `${size / 15}px`);
+  area.style.setProperty('--board', `${size}px`);
   placePieces(false);
 }
 
@@ -693,6 +699,7 @@ function placePieces(animate = true) {
   if (!g || !tb || !$('#pieces')) return;
   const k = turnsFor(tb);
   const myMoves = tb.id === g.myTable ? g.canMove : [];
+  const myRaids = tb.id === g.myTable ? g.canRaid || [] : [];
   const live = new Set();
   const spots = new Map();
   for (const p of tb.players) {
@@ -714,9 +721,13 @@ function placePieces(animate = true) {
       el.classList.toggle('no-anim', !animate);
       el.classList.toggle('stacked', list.length > 1);
       el.style.transform = `translate(calc(var(--u) * ${x + off[0]}), calc(var(--u) * ${y + off[1]})) translate(-50%, -78%)`;
-      const can = p.id === me() && myMoves.includes(i) && !app.rolling;
-      el.classList.toggle('movable', can);
-      el.disabled = !can;
+      // an opponent I can catch in its lane: tap it to raid
+      const raid = app.rolling ? null : myRaids.find(r => r.victim === p.id && r.victimPiece === i);
+      const can = p.id === me() && (myMoves.includes(i) || myRaids.some(r => r.piece === i)) && !app.rolling;
+      el.classList.toggle('movable', can || Boolean(raid));
+      el.classList.toggle('target', Boolean(raid));
+      if (raid) el.dataset.raid = raid.piece; else delete el.dataset.raid;
+      el.disabled = !can && !raid;
       el.classList.toggle('mine', p.id === me());
       el.title = p.id === me() ? t('you') : nameOf(p.id);
     });
@@ -746,7 +757,6 @@ function spotPoint(id, i, progress) {
   const p = seatOf(tb, id);
   return p ? boardPoint(rot(spot(p.seat, progress, i), turnsFor(tb))) : null;
 }
-const yardPoint = seat => boardPoint(rot(YARD[seat], turnsFor(watched())));
 
 // replay a one-shot CSS animation class on an element; it's removed once done so it
 // doesn't hold back the element's other animations (the movable pulse, the ready die)
@@ -763,35 +773,11 @@ function replay(el, cls) {
   el.addEventListener('animationend', done);
 }
 
-function fxLand(pt, color, power = 1) {
-  if (!pt || !fxOn()) return;
-  vfx.shockwave(pt.x, pt.y, color, { from: pt.u * 0.3, to: pt.u * (1.2 + power), width: 3 + power * 2, life: 0.45 });
-  vfx.burst(pt.x, pt.y, [color, '#ffffff'], { n: Math.round(6 + power * 12), speed: 2.5 + power * 2, life: 0.5, size: 2, grav: 0.05 });
-}
-
+// Getting a piece home: one soft ring in the player's color, nothing more.
 function fxHome(ev) {
   const pt = spotPoint(ev.player, ev.piece, HOME);
   if (!pt || !fxOn()) return;
-  const color = hexOf(ev.player);
-  vfx.shockwave(pt.x, pt.y, color, { from: pt.u * 0.5, to: pt.u * 4.5, width: 7, life: 0.7 });
-  vfx.shockwave(pt.x, pt.y, '#ffd23f', { from: pt.u * 0.3, to: pt.u * 3, width: 3, life: 0.9, alpha: 0.6 });
-  vfx.burst(pt.x, pt.y, [color, '#ffd23f', '#ffffff'], { n: 46, speed: 6.5, grav: 0.08, life: 1 });
-  if (ev.player === me()) vfx.stamp(boardEl().querySelector('.home-tri'), '🏠', color);
-}
-
-function fxCapture(ev) {
-  const pt = centerOfPiece(`${ev.victim}:${ev.piece}`);
-  if (!pt || !fxOn()) return;
-  const u = boardEl().clientWidth / 15;
-  vfx.burst(pt.x, pt.y, [hexOf(ev.victim), '#ffffff', hexOf(ev.player)], { n: 50, speed: 8, life: 0.8 });
-  vfx.shockwave(pt.x, pt.y, hexOf(ev.player), { from: u * 0.3, to: u * 3.2, width: 7 });
-  vfx.stamp(pieceAt(`${ev.victim}:${ev.piece}`), '💥', '#ff5a52');
-  vfx.shake(boardEl(), ev.victim === me() || ev.player === me() ? 1 : 0.6);
-  if (ev.victim === me()) vfx.flash('#ff3b30', 0.3);
-}
-function centerOfPiece(key) {
-  const r = pieceAt(key)?.getBoundingClientRect();
-  return r && r.width ? { x: r.left + r.width / 2, y: r.top + r.height * 0.6 } : null;
+  vfx.shockwave(pt.x, pt.y, hexOf(ev.player), { from: pt.u * 0.5, to: pt.u * 2.5, width: 3, life: 0.6, alpha: 0.7 });
 }
 
 // ---------------- what happens at the table on screen, one thing after the other ----------------
@@ -826,7 +812,7 @@ function play(events, tb) {
     else if (ev.type === 'capture') queue(() => showCapture(ev));
     else if (ev.type === 'roll') {
       app.rolling = true; // no movable pieces until the die shows the value
-      queue(() => rollDie(ev.value, ev.player));
+      queue(() => rollDie(ev.value));
     }
     else queue(() => animateEvent(ev, tb));
   }
@@ -841,7 +827,6 @@ function play(events, tb) {
 
 async function walkMove(ev, gen) {
   const key = `${ev.player}:${ev.piece}`;
-  const color = hexOf(ev.player);
   const el = pieceAt(key);
   if (ev.from === -1) {
     // out of the yard: a jump onto the start square
@@ -852,7 +837,6 @@ async function walkMove(ev, gen) {
     if (rushed()) { await sleep(150); return; }
     await sleep(400);
     el?.classList.remove('leap');
-    fxLand(spotPoint(ev.player, ev.piece, ev.to), color, 1.2);
     return;
   }
   if (rushed()) {
@@ -861,19 +845,15 @@ async function walkMove(ev, gen) {
     sfx.step(true);
     await sleep(160);
   } else {
-    for (let p = ev.from + 1; p <= ev.to; p++) {
+    const steps = ev.path || Array.from({ length: ev.to - ev.from }, (_, i) => ev.from + 1 + i);
+    for (const p of steps) {
       if (gen !== app.walkGen) return;
       app.shown[key] = p;
       placePieces(true);
       replay(el, 'hop');
       sfx.step(p === ev.to);
-      if (p < ev.to && fxOn()) {
-        const pt = spotPoint(ev.player, ev.piece, p);
-        if (pt) vfx.mote(pt.x, pt.y, color, { size: 2.5, life: 0.6 });
-      }
       await sleep(p === ev.to ? 180 : 115);
     }
-    if (ev.to !== HOME) fxLand(spotPoint(ev.player, ev.piece, ev.to), color, 0.35);
   }
   if (ev.to === HOME) sfx.home();
 }
@@ -884,16 +864,13 @@ async function showCapture(ev) {
   bubble(el, t('bubble.captured'), 'bad');
   sfx.capture();
   vibrate(ev.victim === me() ? [80, 50, 80] : 30);
-  fxCapture(ev);
   await sleep(160);
-  // knocked back to the yard, spinning
+  // slides back to its yard
   app.shown[key] = -1;
   if (!rushed()) el?.classList.add('knocked');
   placePieces(true);
   await sleep(rushed() ? 200 : 650);
   el?.classList.remove('knocked');
-  const seat = seatOf(watched(), ev.victim)?.seat;
-  if (seat != null) fxLand(yardPoint(seat), hexOf(ev.victim), 0.5);
 }
 
 // ---------------- the die ----------------
@@ -904,7 +881,7 @@ const dieFace = n => (PIPS[n]
   : `<span class="die-label">${esc(t('die.roll'))}</span>`);
 
 // Tumbles for about half a second, lands with a thud. Resolves once the value shows.
-function rollDie(value, player) {
+function rollDie(value) {
   const die = $('#die');
   app.rolling = true;
   placePieces(true);
@@ -922,10 +899,6 @@ function rollDie(value, player) {
       die.innerHTML = dieFace(value);
       replay(die, 'landed');
       app.rolling = false;
-      if (fxOn()) {
-        const r = die.getBoundingClientRect();
-        if (r.width) vfx.impact(r, seatOf(watched(), player)?.color, value === 6 ? 1.3 : 0.4);
-      }
       if (value === 6) bubble(die, t('bubble.six'), 'good');
       placePieces(true);
       renderControl();
@@ -1058,7 +1031,10 @@ function renderControl() {
     explain = t('explain.waitTables');
   } else if (myTurn && g.canRoll) {
     status = t('status.roll');
-    explain = t(meP.pieces.every(p => p < 0 || p === HOME) ? 'explain.needSix' : 'explain.roll');
+    explain = t(meP.pieces.some(isRaid) ? 'explain.trapped' : meP.pieces.every(p => p < 0 || p === HOME) ? 'explain.needSix' : 'explain.roll');
+  } else if (myTurn && g.canRaid?.length) {
+    status = t('status.move', { n: tb.die });
+    explain = t('explain.raid', { n: tb.die });
   } else if (myTurn && g.canMove.length) {
     status = t('status.move', { n: tb.die });
     explain = t('explain.move', { n: tb.die });
@@ -1066,8 +1042,15 @@ function renderControl() {
     status = t('status.waiting', { name: nameOf(cur), color: colorName(tb, cur) });
     explain = mineTable ? t('explain.youAre', { color: colorName(tb, me()) }) : t('explain.watching');
   }
+  const auto = Boolean(member(me())?.autoplay);
+  if (auto && mineTable && g.phase === 'play' && !tb.done) status = t('status.autoplay');
   $('#status').textContent = status;
   $('#explain').textContent = explain;
+  const ab = $('#btn-autoplay');
+  ab.classList.toggle('hidden', !mineTable || g.phase !== 'play' || Boolean(tb.done));
+  ab.classList.toggle('on', auto);
+  ab.textContent = t(auto ? 'autoplay.off' : 'autoplay.on');
+  ab.title = t('autoplay.title');
   $('#control').classList.toggle('my-turn', myTurn);
   if (meP) $('#control').style.setProperty('--mine', COLOR_HEX[meP.color]);
 }
@@ -1088,7 +1071,7 @@ function renderStandings(g) {
     const tb = where(s.id);
     return `<li data-pid="${s.id}" class="${s.id === me() ? 'me' : ''}">
       <span class="rank">${i + 1}</span>${avatarHtml(m)}
-      <span class="st-main"><span class="st-name">${esc(nameOf(s.id))}${voiceTag(m)}</span>
+      <span class="st-main"><span class="st-name">${esc(nameOf(s.id))}${m?.autoplay ? ` <small class="auto-tag">${esc(t('tag.autoplay'))}</small>` : ''}${voiceTag(m)}</span>
         <span class="bar"><i style="width:${pct(old.get(s.id) ?? s.score)}%"></i></span></span>
       <span class="st-score"><b>${s.score}</b><small>${tb !== null ? esc(t('side.atTable', { n: tb + 1 })) : esc(t('side.waiting'))}${s.wins ? ` · 🏆${s.wins}` : ''}</small></span>
     </li>`;
@@ -1196,14 +1179,6 @@ function animateEvent(ev, tb) {
         sfx.turn();
         vibrate(50);
         if (document.hidden) document.title = t('title.yourTurn');
-        if (here && fxOn()) {
-          replay($('#control'), 'sweep');
-          const seat = seatOf(tb, me())?.seat;
-          if (seat != null) {
-            const pt = yardPoint(seat);
-            vfx.shockwave(pt.x, pt.y, hexOf(me()), { from: pt.u, to: pt.u * 5, width: 6, life: 0.6 });
-          }
-        }
       }
       return;
     case 'timeout':
@@ -1215,12 +1190,9 @@ function animateEvent(ev, tb) {
   switch (ev.type) {
     case 'noMove':
       bubble(die, t('bubble.noMove'), 'bad');
-      vfx.shake(die, 0.6);
       break;
     case 'threeSixes':
       bubble(die, t('bubble.threeSixes'), 'bad');
-      vfx.shake(die, 1);
-      if (mine) vfx.flash('#ff3b30', 0.25);
       break;
     case 'again':
       if (ev.why !== 'six') bubble(die, t(`bubble.again.${ev.why}`), 'good');
@@ -1230,11 +1202,7 @@ function animateEvent(ev, tb) {
       break;
     case 'finished':
       sfx.home();
-      if (fxOn()) {
-        const color = hexOf(ev.player);
-        vfx.shout(mine ? t('fx.youFinished') : t('fx.finished', { name: nameOf(ev.player) }), { color, glow: color, size: 0.6, at: boardEl().getBoundingClientRect() });
-        if (mine) vfx.fireworks(1500);
-      }
+      toast(mine ? t('fx.youFinished') : t('fx.finished', { name: nameOf(ev.player) }), mine ? 'good' : 'info', 2500);
       break;
     default: break;
   }
@@ -1243,7 +1211,6 @@ function animateEvent(ev, tb) {
 // a new round: pieces drop into their yards one after the other
 function dealIn(g) {
   if (!fxOn()) return;
-  vfx.shout(t('fx.round', { n: g.round }), { size: 0.7, color: '#fff', glow: '#ffd23f', at: boardEl().getBoundingClientRect() });
   $$('#pieces .piece').forEach((el, i) => {
     el.style.setProperty('--d', `${300 + i * 45}ms`);
     replay(el, 'deal');
@@ -1256,7 +1223,7 @@ function describe(ev) {
     victim: ev.victim ? esc(nameOf(ev.victim)) : '',
     victimMe: ev.victim === me(),
     value: ev.value,
-    steps: ev.to - Math.max(ev.from ?? 0, 0),
+    steps: ev.path ? ev.path.length : ev.to - Math.max(ev.from ?? 0, 0),
     place: ev.place ? t(`place.${ev.place}`) : '',
     n: ev.round,
     table: ev.table != null ? ev.table + 1 : '',
@@ -1265,6 +1232,8 @@ function describe(ev) {
   };
   if (ev.type === 'move') {
     if (ev.from === -1) return t('ev.out', p);
+    if (ev.raid) return t('ev.raid', { ...p, victim: esc(nameOf(ev.raid)), victimMe: ev.raid === me() });
+    if (isRaid(ev.from)) return t(isRaid(ev.to) ? 'ev.back' : 'ev.backOut', p);
     if (ev.to === HOME) return null; // the 'home' event tells it
     return t('ev.move', p);
   }
@@ -1511,6 +1480,17 @@ async function leaveRoom() {
   leaveToHome(t('toast.left'));
 }
 
+// A glowing piece was tapped: one of mine moves (or raids, when that's all it can do),
+// or an opponent's piece in its lane gets caught.
+function movePiece(el) {
+  const g = game();
+  if (!g) return;
+  if (el.dataset.raid != null) { act('move', { piece: Number(el.dataset.raid), raid: true }); return; }
+  const k = Number(el.dataset.k);
+  if (g.canMove.includes(k)) act('move', { piece: k });
+  else if ((g.canRaid || []).some(r => r.piece === k)) act('move', { piece: k, raid: true });
+}
+
 function roll() {
   if (!game()?.canRoll || app.rolling) return;
   act('roll');
@@ -1551,7 +1531,7 @@ function wire() {
   $('#die').addEventListener('click', roll);
   $('#board').addEventListener('click', e => {
     const piece = e.target.closest('.piece.movable');
-    if (piece) { act('move', { piece: Number(piece.dataset.k) }); return; }
+    if (piece) { movePiece(piece); return; }
     // tapping the board on your turn rolls too
     if (game()?.canRoll && watched()?.id === game().myTable) roll();
   });
@@ -1601,11 +1581,11 @@ function wire() {
       case 'rules': closeModal('menu'); closeModal('intro'); openModal('rules'); break;
       case 'intro': if (game()) showIntro(); else openModal('rules'); break;
       case 'mute': setMuted(!isMuted()); updateMuteButtons(); if (!isMuted()) sfx.turn(); break;
+      case 'autoplay': act('autoplay', { on: !member(me())?.autoplay }); break;
       case 'fx':
         vfx.setEffects(vfx.motion.reduced);
         updateFxButton();
         toast(t(vfx.motion.reduced ? 'toast.fxOff' : 'toast.fxOn'), 'good', 1600);
-        if (!vfx.motion.reduced) vfx.fireworks(900);
         break;
       case 'chat': toggleDrawer(); break;
       case 'voice': if (voice.on) voice.leave(); else voice.join(); break;
@@ -1655,7 +1635,7 @@ function wire() {
     if (k === 'v' && voice.on) { voice.toggleMute(); return; }
     const g = game();
     if (!g || $$('.modal').some(m => !m.classList.contains('hidden'))) return;
-    if ((k === 'r' || k === ' ') && g.canRoll) { e.preventDefault(); roll(); } else if (/^[1-4]$/.test(k) && !app.rolling && g.canMove.includes(Number(k) - 1)) act('move', { piece: Number(k) - 1 });
+    if ((k === 'r' || k === ' ') && g.canRoll) { e.preventDefault(); roll(); } else if (/^[1-4]$/.test(k) && !app.rolling) movePiece({ dataset: { k: Number(k) - 1 } });
     else if (k === 't') toggleDrawer();
   });
 

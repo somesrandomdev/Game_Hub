@@ -80,7 +80,7 @@ module.exports = {
     const g = room.game;
     if (g.phase !== 'play') return;
     const member = id => room.members.get(id);
-    const away = mm => mm && !mm.isBot && !mm.connected;
+    const away = mm => mm && !mm.isBot && (!mm.connected || mm.autoplay);
     const awayAt = (key, mm) => plan(key, () => Math.max(Date.now() + 1200, (mm.disconnectedAt || 0) + AWAY_GRACE_MS));
 
     if (g.endsAt) at(g.endsAt, () => { if (g.checkTime()) room.broadcast(); });

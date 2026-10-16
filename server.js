@@ -47,7 +47,10 @@ const MIME = {
 };
 
 const rooms = new Map();
-let publicUrl = null;            // https://….trycloudflare.com while the online link is up
+// https://….trycloudflare.com while the online link is up. On a cloud host, the site's own
+// address (PUBLIC_URL, or the one Render sets) is the invite link and LAN addresses mean nothing.
+const HOSTED_URL = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '') || null;
+let publicUrl = HOSTED_URL;
 const randomId = (bytes = 6) => crypto.randomBytes(bytes).toString('hex');
 
 function newRoomCode() {
@@ -122,6 +125,7 @@ class Room {
       joinedAt: Date.now(),
       voice: false,       // in the voice chat
       voiceMuted: false,
+      autoplay: false,    // asked the computer to play for them
     };
     this.members.set(m.id, m);
     if (!this.hostId && !isBot) this.hostId = m.id;
@@ -166,7 +170,7 @@ class Room {
   view(memberId) {
     const members = [...this.members.values()].map(m => ({
       id: m.id, name: m.name, isBot: m.isBot, connected: m.connected, waiting: m.waiting, color: m.color,
-      voice: m.voice, voiceMuted: m.voiceMuted,
+      voice: m.voice, voiceMuted: m.voiceMuted, autoplay: m.autoplay,
     }));
     return {
       code: this.code,
@@ -320,6 +324,10 @@ class Room {
         this.send(target.id, { type: 'signal', from: m.id, data: body.data });
         return false;
       }
+      // the computer plays for you (like when you drop) until you switch it off or move
+      case 'autoplay':
+        m.autoplay = Boolean(body.on);
+        break;
       case 'react':
         if (!REACTIONS.includes(body.emoji)) throw new GameError('unknownReaction');
         this.sendAll({ type: 'react', from: m.id, emoji: body.emoji });
@@ -328,9 +336,13 @@ class Room {
         this.system('left', { name: m.name });
         this.removeMember(m.id, 'left');
         break;
-      default:
-        // everything else is a move in the game
-        return Boolean(this.kind.action(this, m, body));
+      default: {
+        // everything else is a move in the game; making one yourself means you're back
+        const changed = Boolean(this.kind.action(this, m, body));
+        const was = m.autoplay;
+        m.autoplay = false;
+        return changed || was;
+      }
     }
     return true;
   }
@@ -529,7 +541,7 @@ async function handleApi(req, res, url) {
   if (req.method === 'GET') {
     if (route === 'stream') return openStream(req, res, url);
     if (route === 'poll') return openPoll(req, res, url);
-    if (route === 'info') return json(res, 200, { addresses: lanAddresses(), port: server.address().port, online: ONLINE, publicUrl });
+    if (route === 'info') return json(res, 200, { addresses: HOSTED_URL ? [] : lanAddresses(), port: server.address().port, online: ONLINE, publicUrl });
     if (route === 'games') {
       const list = Object.values(GAMES).map(g => ({ id: g.id, name: g.name, minPlayers: g.minPlayers, maxPlayers: g.maxPlayers }));
       return json(res, 200, { games: list });

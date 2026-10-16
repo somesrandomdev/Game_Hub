@@ -296,6 +296,7 @@ class UnoGame {
     this.drawn = null;
     this.unoSafe = new Set();
     this.vulnerable = new Map(); // pid -> seq when they became catchable
+    this.vulnerableAt = 0;       // when the last one did (the server gives them a moment to call)
     this.finished = [];          // last-standing: players who went out, in order
     this.awarded = {};
     this.bonuses = {};           // pid -> [{ kind, points }] earned this round
@@ -373,7 +374,12 @@ class UnoGame {
   nextRound() {
     if (this.phase !== 'roundOver') throw new GameError('roundNotOver');
     if (this.players.length < 2) throw new GameError('needTwoPlayers');
-    this.dealer = (this.dealer + 1) % this.players.length;
+    // new seats every round, so nobody keeps feeding the same neighbour (no teaming up)
+    const before = this.players.join();
+    for (let i = 0; i < 5 && this.players.join() === before && this.players.length > 2; i++) {
+      this.players = shuffle(this.players, this.rng);
+    }
+    this.dealer = Math.floor(this.rng() * this.players.length);
     this.startRound();
   }
 
@@ -515,7 +521,10 @@ class UnoGame {
       if (opts.uno) {
         this.unoSafe.add(pid);
         this.emit('uno', { player: pid });
-      } else this.vulnerable.set(pid, this.seq);
+      } else {
+        this.vulnerable.set(pid, this.seq);
+        this.vulnerableAt = this.now();
+      }
     }
     const out = hand.length === 0;
     const leaving = out && this.settings.lastStanding;
@@ -584,14 +593,16 @@ class UnoGame {
     const victim = this.players[this.nextIndex(1)];
     const { type } = penalty;
     if (type !== 'wildColor') penalty = { count: this.pending.count + penalty.count, type };
-    if (out) {
-      // last card: whatever is stacked lands on the victim immediately
+    // last card while the round goes on (lastStanding): the victim may still stack on it
+    const stackable = this.settings.stacking && type !== 'wildColor';
+    if (out && !(stackable && this.settings.lastStanding && this.active.length >= 2)) {
+      // the round ends (or nobody can answer): whatever is stacked lands on the victim immediately
       this.pending = { count: 0, type: null };
       this.givePenalty(victim, penalty, type);
       this.advance(2);
       return;
     }
-    if (this.settings.stacking && type !== 'wildColor') {
+    if (stackable) {
       this.pending = penalty;
       this.advance(1);
       return;

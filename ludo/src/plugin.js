@@ -15,7 +15,7 @@ function pause(g, t) {
   let ms = 700 + Math.random() * 400;
   for (const e of last) {
     if (e.type === 'roll') ms += 450;
-    if (e.type === 'move') ms += Math.max(0, e.to - Math.max(e.from, 0)) * 90 + 200;
+    if (e.type === 'move') ms += (e.path ? e.path.length : Math.max(0, e.to - Math.max(e.from, 0))) * 90 + 200;
     if (e.type === 'capture') ms += 700;
     if (e.type === 'noMove' || e.type === 'threeSixes') ms += 600;
   }
@@ -46,7 +46,7 @@ module.exports = {
     if (!g) throw new GameError('noGame');
     switch (body.action) {
       case 'roll': g.roll(m.id); return true;
-      case 'move': g.move(m.id, body.piece); return true;
+      case 'move': g.move(m.id, body.piece, body.raid === true); return true;
       default: throw new GameError('unknownAction');
     }
   },
@@ -74,7 +74,7 @@ module.exports = {
       const key = `turn:${g.id}:${g.round}:${t.id}:${t.seq}`;
       if (!mm || mm.isBot) {
         at(plan(key, () => Date.now() + pause(g, t)), () => autoAct(room, pid));
-      } else if (!mm.connected) {
+      } else if (!mm.connected || mm.autoplay) {
         at(plan(`${key}:away`, () => Math.max(Date.now() + 1000, (mm.disconnectedAt || 0) + AWAY_GRACE_MS)), () => autoAct(room, pid));
       } else if (g.settings.turnTimer > 0) {
         at(t.turnStartedAt + g.settings.turnTimer * 1000, () => {

@@ -22,6 +22,7 @@ const UNO_ERRORS = {
   sameValueOnly: 'Cards played together must have the same number or symbol',
   catchSelf: 'You cannot catch yourself — call UNO!',
   tooLate: 'Too late!',
+  tooEarly: 'Give them a second to call UNO!',
 };
 
 const UNO_SYSTEM = {

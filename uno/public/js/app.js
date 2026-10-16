@@ -76,6 +76,7 @@ const app = {
   lobbySig: '',
   sel: null,           // multi-card selection: { value, ids }
   unoArmed: false,     // UNO pressed before playing: the next play carries the call
+  unoLate: false,      // UNO pressed while a play was in flight: call it right after
   drop: null,          // cards dropped on the pile, waiting for the server: { ghost, rects }
   justDragged: false,
   chatMsgs: [],   // kept so chat can be re-rendered when the language changes
@@ -696,10 +697,6 @@ function renderGame(s, prev) {
   if (myTurn && !app.prevMyTurn && !boot) {
     sfx.turn();
     vibrate(40);
-    const wrap = $('#hand-wrap');
-    wrap.classList.remove('sweep');
-    void wrap.offsetWidth;
-    wrap.classList.add('sweep');
   }
   app.prevMyTurn = myTurn;
   document.title = myTurn && document.hidden ? t('title.turn') : t('title.page');
@@ -1067,7 +1064,8 @@ function unoMode(g, myP, myTurn) {
   const count = g.hand.length;
   if (app.sel && count - app.sel.ids.length === 1 && !g.safe) return 'play';
   if (g.canUno && (count === 1 || !g.settings.unoLastCard)) return 'call';
-  if (!myTurn || g.safe || count < 2 || !g.playable.length) return null;
+  // (playable is also set out of turn when a jump-in is possible)
+  if (g.safe || count < 2 || !g.playable.length) return null;
   // could one play leave a single card? (same rule as the server's nearUno, minus unoLastCard)
   const groups = {};
   for (const c of g.hand) groups[c.value] = (groups[c.value] || 0) + 1;
@@ -1080,19 +1078,28 @@ function pressUno() {
   const myP = g.players.find(p => p.id === me());
   const mode = unoMode(g, myP, g.current === me());
   if (mode === 'play') playCards(app.sel.ids.slice(), { uno: true });
-  else if (mode === 'call') act('uno');
-  else if (mode === 'arm') {
-    app.unoArmed = !app.unoArmed;
-    if (app.unoArmed) sfx.pick();
-    renderActions(g, myP, true);
+  else if (mode === 'call') {
+    // the call is its own request: if the card goes down right after, the play can reach the
+    // server first and leave us catchable, so the next play carries the call as well
+    app.unoArmed = true;
+    act('uno');
   }
+  else if (mode === 'arm') {
+    // a second press must not quietly take the call back: armed stays armed
+    if (!app.unoArmed) sfx.pick();
+    app.unoArmed = true;
+    renderActions(g, myP, g.current === me());
+  }
+  // pressed while a play is still on its way: send the call once the play has landed
+  if (app.busy) app.unoLate = true;
 }
 
 function renderActions(g, myP, myTurn) {
   const uno = $('#btn-uno');
   const count = myP?.count ?? 0;
   const mode = unoMode(g, myP, myTurn);
-  if (mode !== 'arm') app.unoArmed = false;
+  // selecting the cards to play ('play') must not drop an earlier press
+  if (!mode) app.unoArmed = false;
   const safe = g.safe && !myP?.vulnerable;
   uno.classList.toggle('hidden', !mode && !(safe && g.canUno));
   uno.classList.toggle('done', safe);
@@ -1180,20 +1187,13 @@ function stopTimer() { cancelAnimationFrame(app.timerRaf); }
 function processEvents(g, handRects, boot) {
   const fresh = g.events.filter(e => e.seq > app.lastSeq);
   if (g.events.length) app.lastSeq = Math.max(app.lastSeq, g.events[g.events.length - 1].seq);
-  const ctx = { drawIdx: 0, playIdx: 0, combo: new Map() };
+  const ctx = { drawIdx: 0, playIdx: 0 };
   for (const ev of fresh) {
     logEvent(ev);
     if (boot) continue;
     try { animateEvent(ev, g, handRects, ctx); } catch (err) { console.warn(err); }
     if (ev.type === 'draw') ctx.drawIdx += Math.min(ev.count, 4);
-    if (ev.type === 'play') {
-      ctx.playIdx++;
-      ctx.combo.set(ev.player, (ctx.combo.get(ev.player) || 0) + 1);
-    }
-  }
-  // several cards dropped at once deserve a callout
-  for (const [, n] of ctx.combo) {
-    if (n >= 2) setTimeout(() => { vfx.shout(t('fx.combo', { n }), { color: '#fff', glow: n >= 3 ? '#c77dff' : '#4ea1ff', size: 0.8 + n * 0.12 }); sfx.shimmer(); }, 380 + n * 150);
+    if (ev.type === 'play') ctx.playIdx++;
   }
 }
 
@@ -1228,17 +1228,6 @@ function dealToSeats(g) {
   });
 }
 
-// Reverse: sparks fly off the ring along its new spin direction.
-function ringSparks(dir) {
-  const c = centerOf($('#direction'));
-  if (!c) return;
-  const r = c.r.width / 2 - 6;
-  for (let i = 0; i < 14; i++) {
-    const a = (i / 14) * Math.PI * 2;
-    vfx.burst(c.x + Math.cos(a) * r, c.y + Math.sin(a) * r, ['#ffffff', vfx.PALETTE[app.state?.game?.color] || '#ffd23f'], { n: 5, speed: 6, angle: a + (dir * Math.PI) / 2, spread: 0.5, grav: 0, life: 0.6 });
-  }
-}
-
 const BONUS_ICON = { catch: '🚨', combo: '⚡', finish: '🎯', streak: '🔥' };
 const bonusChips = list => (list || []).map(b => `<span class="bonus-chip">${BONUS_ICON[b.kind] || '⭐'}+${b.points}</span>`).join('');
 
@@ -1261,7 +1250,6 @@ function animateEvent(ev, g, handRects, ctx) {
       if (dropped) app.drop.ghost.querySelector(`[data-id="${ev.card.id}"]`)?.remove();
       // the card is already drawn on the pile: hide it until the flying copy lands
       const onPile = pile.querySelector(`.card[data-id="${ev.card.id}"]`);
-      const colors = vfx.colorsFor(ev.card.color === 'wild' ? null : ev.card.color);
       const heavy = HEAVY[ev.card.value] || (ev.card.color === 'wild' ? 1.4 : 1);
       const delay = ctx.playIdx * 150;
       const duration = dropped ? 260 : mine ? 440 : 560;
@@ -1271,28 +1259,18 @@ function animateEvent(ev, g, handRects, ctx) {
         // flight gets dropped or stalls
         setTimeout(() => { onPile.style.visibility = ''; }, delay + duration + 600);
       }
-      setTimeout(() => (dropped ? sfx.pick() : sfx.whoosh()), delay);
+      if (dropped) setTimeout(sfx.pick, delay);
       vfx.flyArc(createCard(ev.card), fromRect, toRect, {
         duration,
         delay,
         rotFrom: mine ? 0 : -50,
         rotTo: tiltFor(ev.card.id),
-        lift: dropped ? 0.05 : mine ? 0.22 : 0.32,
+        lift: dropped ? 0.05 : mine ? 0.18 : 0.24,
         flip: !mine,
-        trail: colors,
         onLand: () => {
           if (onPile) onPile.style.visibility = '';
-          sfx.slam(Math.min(1.4, heavy));
-          vfx.impact(toRect, ev.card.color === 'wild' ? null : ev.card.color, heavy);
-          if (ev.card.color === 'wild') {
-            vfx.colorWave(toRect, ev.color);
-            sfx.wild();
-          }
-          if (HEAVY[ev.card.value] >= 2) {
-            sfx.boom();
-            vfx.shake($('#table'), 1.2);
-          }
-          if (ev.card.value === 'reverse') ringSparks(g.direction);
+          sfx.slam(heavy);
+          if (ev.card.color === 'wild') sfx.wild();
         },
       });
       if (app.drop && ![...app.drop.ghost.children].length) endDrop();
@@ -1305,18 +1283,9 @@ function animateEvent(ev, g, handRects, ctx) {
       if (hit) {
         // land after the card that caused it
         setTimeout(() => {
-          if (mine) {
-            ev.count >= 4 ? sfx.boom() : sfx.penalty();
-            vfx.flash('#ff3b30', Math.min(0.55, 0.2 + ev.count * 0.04));
-            vfx.shake($('#screen-game'), Math.min(2.2, 0.8 + ev.count / 6));
-            vfx.shout(`+${ev.count}`, { color: '#fff', glow: '#ff3b30', size: Math.min(1.6, 0.9 + ev.count / 10) });
-            vibrate([80, 40, 80, 40, 120]);
-          } else {
-            sfx.penalty();
-            vfx.stamp(avatar(ev.player), `+${ev.count}`, '#ff5a52');
-            const c = centerOf(avatar(ev.player));
-            if (c) vfx.burst(c.x, c.y, ['#ff5a52', '#ffffff'], { n: 18 + ev.count * 3, speed: 6 });
-          }
+          sfx.penalty();
+          vfx.stamp(avatar(ev.player), `+${ev.count}`, '#e5322d');
+          if (mine) vibrate([80, 40, 80]);
         }, ctx.playIdx ? 480 : 120);
       }
       if (!mine) {
@@ -1325,7 +1294,7 @@ function animateEvent(ev, g, handRects, ctx) {
         const from = $('#draw-pile').getBoundingClientRect();
         const to = rectAround(seat.querySelector('.avatar') || seat, 28);
         for (let i = 0; i < Math.min(ev.count, 6); i++) {
-          vfx.flyArc(createBack(), from, to, { duration: 440, delay: (hit && ctx.playIdx ? 380 : 0) + (ctx.drawIdx + i) * 70, rotTo: 160 + i * 25, lift: 0.2, trail: hit ? ['#ff5a52'] : null });
+          vfx.flyArc(createBack(), from, to, { duration: 420, delay: (hit && ctx.playIdx ? 380 : 0) + (ctx.drawIdx + i) * 70, rotTo: 20 + i * 8, lift: 0.15 });
         }
       }
       break;
@@ -1333,7 +1302,7 @@ function animateEvent(ev, g, handRects, ctx) {
     case 'skip':
       setTimeout(() => {
         sfx.skip();
-        vfx.stamp(avatar(ev.player), '⊘', '#ffd23f');
+        vfx.stamp(avatar(ev.player), '⊘', '#f5b800');
       }, ctx.playIdx ? 450 : 150);
       break;
     case 'reverse': {
@@ -1342,26 +1311,17 @@ function animateEvent(ev, g, handRects, ctx) {
       dir.classList.remove('flip');
       void dir.offsetWidth;
       dir.classList.add('flip');
-      setTimeout(() => vfx.shout('⇄', { color: '#fff', glow: vfx.PALETTE[g.color] || '#ffd23f', size: 1.1 }), 300);
       break;
     }
     case 'uno': {
       sfx.uno();
-      vfx.shout(t('btn.uno'), { color: '#fff', glow: '#ff3b30', size: mine ? 1.35 : 1 });
-      const c = centerOf(avatar(ev.player));
-      if (c) {
-        vfx.shockwave(c.x, c.y, '#ff5a52', { from: 20, to: 140, width: 6 });
-        vfx.burst(c.x, c.y, ['#ff5a52', '#ffd23f', '#ffffff'], { n: 30, speed: 7 });
-      }
-      vibrate(80);
+      bubble(avatar(ev.player), t('btn.uno'), 'uno');
+      vibrate(60);
       break;
     }
     case 'caught': {
       sfx.caught();
       bubble(avatar(ev.player), t('ev.caught'), 'bad');
-      vfx.shake(seatEl(ev.player), 1.6);
-      const c = centerOf(avatar(ev.player));
-      if (c) vfx.burst(c.x, c.y, ['#ff5a52', '#ffffff'], { n: 26, speed: 7 });
       const n = g.settings.unoPenalty;
       if (mine) toast(t('toast.caughtMe', { by: nameOf(ev.by), n }), 'error');
       else if (ev.by === me()) toast(t('toast.youCaught', { who: nameOf(ev.player), n }), 'good');
@@ -1370,7 +1330,6 @@ function animateEvent(ev, g, handRects, ctx) {
     }
     case 'challenge':
       toast(t(ev.success ? 'toast.challengeOk' : 'toast.challengeBad', { a: nameOf(ev.player), b: nameOf(ev.target) }), ev.success ? 'good' : 'error', 3200);
-      vfx.shout(ev.success ? '⚖️ ✔' : '⚖️ ✘', { glow: ev.success ? '#3ddc84' : '#ff3b30' });
       break;
     case 'swap': {
       sfx.swap();
@@ -1378,22 +1337,20 @@ function animateEvent(ev, g, handRects, ctx) {
       const a = centerOf(avatar(ev.player));
       const b = centerOf(avatar(ev.target));
       if (a && b) {
-        vfx.flyArc(createBack(), rectAround(avatar(ev.player), 30), rectAround(avatar(ev.target), 30), { duration: 600, lift: 0.3, trail: ['#c77dff', '#fff'] });
-        vfx.flyArc(createBack(), rectAround(avatar(ev.target), 30), rectAround(avatar(ev.player), 30), { duration: 600, lift: -0.3, trail: ['#4ea1ff', '#fff'] });
+        vfx.flyArc(createBack(), rectAround(avatar(ev.player), 30), rectAround(avatar(ev.target), 30), { duration: 600, lift: 0.2 });
+        vfx.flyArc(createBack(), rectAround(avatar(ev.target), 30), rectAround(avatar(ev.player), 30), { duration: 600, lift: -0.2 });
       }
       break;
     }
     case 'flip': {
       // after the card that caused it lands
       setTimeout(() => {
-        sfx.reverse();
-        sfx.whoosh();
+        sfx.swap();
         document.body.classList.remove('flipping');
         void document.body.offsetWidth;
         document.body.classList.add('flipping');
         setTimeout(() => document.body.classList.remove('flipping'), 650);
-        vfx.shout(t('ev.flip'), { color: '#fff', glow: ev.side === 'dark' ? '#c77dff' : '#ffd23f', size: 1.3 });
-        vfx.colorWave($('#discard-pile').getBoundingClientRect(), ev.color);
+        toast(t('ev.flip'), 'info', 1800);
         vibrate([40, 30, 40]);
       }, ctx.playIdx ? 420 : 0);
       break;
@@ -1410,19 +1367,15 @@ function animateEvent(ev, g, handRects, ctx) {
     case 'rotate':
       sfx.swap();
       toast(t('toast.rotate'), 'info', 3000);
-      vfx.colorWave($('#discard-pile').getBoundingClientRect(), 'wild');
-      ringSparks(g.direction);
       break;
     case 'jumpIn':
       bubble(avatar(ev.player), t('ev.jumpIn'), 'good');
-      vfx.shout(t('ev.jumpIn'), { glow: '#b388ff', size: 0.8 });
       break;
     case 'timeout':
       toast(mine ? t('toast.timeoutMe') : t('toast.timeout', { name: nameOf(ev.player) }), mine ? 'error' : 'info');
       break;
     case 'reshuffle':
       toast(t('toast.reshuffle'), 'info', 1800);
-      vfx.impact($('#draw-pile').getBoundingClientRect(), null, 1);
       break;
     case 'roundStart':
       toast(t('toast.roundStart', { n: ev.round }), 'good', 1800);
@@ -1430,19 +1383,9 @@ function animateEvent(ev, g, handRects, ctx) {
       break;
     case 'finished': {
       setTimeout(mine ? sfx.win : sfx.uno, 300);
-      const c = centerOf(avatar(ev.player));
-      if (c) {
-        vfx.firework(c.x, c.y);
-        vfx.shockwave(c.x, c.y, '#ffd23f', { from: 20, to: 200, width: 8, life: 0.8 });
-      }
       toast(mine ? t('toast.finishedMe', { place: ev.place, pts: ev.points }) : t('toast.finished', { name: nameOf(ev.player), place: ev.place }), mine ? 'good' : 'info', 2500);
-      if (mine) {
-        vfx.shout(t('seat.place', { n: ev.place }), { color: '#f5b800', size: 1.2 });
-        vfx.confetti(1800);
-        vfx.fireworks(1600);
-      } else {
-        bubble(avatar(ev.player), t('seat.place', { n: ev.place }), 'good');
-      }
+      bubble(avatar(ev.player), t('seat.place', { n: ev.place }), 'good');
+      if (mine) vfx.confetti(1500);
       break;
     }
     case 'roundOver': {
@@ -1450,14 +1393,12 @@ function animateEvent(ev, g, handRects, ctx) {
         const lost = ev.loser === me();
         setTimeout(lost ? sfx.lose : sfx.win, 300);
         bubble(avatar(ev.loser), t('ev.lastOne'), 'bad');
-        if (lost) vfx.flash('#1e293b', 0.6);
       } else {
         const won = ev.winner === me();
         setTimeout(won ? sfx.win : sfx.lose, 300);
         bubble(avatar(ev.winner), won ? t('ev.iWin') : t('ev.out'), 'good');
       }
-      if (ev.gameOver) vfx.fireworks(4200);
-      else if (ev.winner === me()) vfx.fireworks(1800);
+      if (ev.gameOver || ev.winner === me()) vfx.confetti(ev.gameOver ? 3000 : 1500);
       break;
     }
     case 'abandoned':
@@ -1520,7 +1461,6 @@ function startDrag(e) {
   ghost.style.width = `${lead.width}px`;
   ghost.style.height = `${lead.height}px`;
   const hand = app.state.game.hand;
-  drag.color = hand.find(c => c.id === ids[0])?.color;
   ids.forEach((id, i) => {
     const src = $(`#hand .card[data-id="${id}"]`);
     if (!src) return;
@@ -1556,18 +1496,9 @@ function moveDrag(e) {
   if (over !== drag.over) {
     drag.over = over;
     $('#discard-pile').classList.toggle('drop-hot', over);
-    if (over) {
-      sfx.pick();
-      vfx.shockwave(pile.left + pile.width / 2, pile.top + pile.height / 2, vfx.colorsFor(drag.color)[0], { from: pile.width * 0.5, to: pile.width * 1.3, width: 4, life: 0.4 });
-    }
+    if (over) sfx.pick();
   }
   drag.ghost.style.transform = `translate(${e.clientX - drag.offX}px, ${e.clientY - drag.offY}px) rotate(${drag.tilt}deg) scale(${over ? 1.12 : 1.06})`;
-  if (Math.random() < (over ? 0.8 : 0.35)) {
-    const cols = vfx.colorsFor(drag.color);
-    const x = e.clientX - drag.offX + Math.random() * drag.w;
-    const y = e.clientY - drag.offY + Math.random() * drag.h;
-    vfx.mote(x, y, cols[Math.floor(Math.random() * cols.length)], { size: 2 + Math.random() * 2 });
-  }
 }
 
 // Ghost cards glide back to their slots in the hand.
@@ -1795,8 +1726,6 @@ async function onCardClick(el) {
     if (i >= 0) sel.ids.splice(i, 1);
     else sel.ids.push(id);
     sfx.pick();
-    const c = centerOf(el);
-    if (c && i < 0) vfx.burst(c.x, c.y - c.r.height * 0.3, vfx.colorsFor(card.color), { n: 12, speed: 4, life: 0.5 });
     return renderSel();
   }
   app.sel = null;
@@ -1844,7 +1773,11 @@ async function playCards(ids, extra = {}) {
     ok = color ? await act('play', { ...opts, flipColor: color }) : false;
   }
   app.busy = false;
+  // UNO! was pressed after this play had already gone out without it
+  const late = app.unoLate && !opts.uno;
+  app.unoLate = false;
   if (ok) app.unoArmed = false;
+  if (ok && late) act('uno', {}, { quiet: () => true }); // harmless if it wasn't needed
   return ok;
 }
 
@@ -2283,7 +2216,6 @@ function wire() {
         vfx.setEffects(vfx.motion.reduced);
         updateFxButton();
         toast(t(vfx.motion.reduced ? 'toast.fxOff' : 'toast.fxOn'), 'good', 1600);
-        if (!vfx.motion.reduced) { vfx.shout('✨', { glow: '#ffd23f' }); vfx.fireworks(900); }
         break;
       case 'fullscreen':
         if (document.fullscreenElement) document.exitFullscreen?.();

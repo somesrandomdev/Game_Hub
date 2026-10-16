@@ -92,12 +92,20 @@ const en = {
   'explain.needSix': 'All your pieces are at the start: you need a 6 to bring one out.',
   'explain.roll': 'Roll, then move one of your pieces that many squares.',
   'explain.move': 'Tap a glowing piece to move it {n} squares.',
+  'explain.raid': 'A piece in its lane is within reach: tap it (red glow) to catch it, or tap one of yours to move it {n} squares.',
+  'explain.trapped': 'Your piece is stuck in an opponent\'s lane: it backs out one square on each 6 or 1.',
   'explain.youAre': 'You are {color}, bottom left. Your pieces go clockwise to the middle.',
   'explain.watching': 'You\'re watching another table.',
   'explain.waitTables': 'Waiting for the other tables to finish, then everyone gets new opponents.',
   'explain.nextRound': 'New tables in a moment: you\'ll face different players.',
 
   'side.standings': 'Standings',
+  'side.story': 'Latest moves',
+  'autoplay.on': 'Play for me',
+  'autoplay.off': 'I’m back',
+  'autoplay.title': 'The computer plays your turns until you tap “I’m back” or move yourself',
+  'status.autoplay': 'The computer is playing for you',
+  'tag.autoplay': 'auto',
   'side.tables': 'Tables',
   'side.target': 'first to {n}',
   'side.atTable': 'table {n}',
@@ -133,6 +141,9 @@ const en = {
   'ev.roll': '{name} rolled a {value}',
   'ev.out': '{name} brought a piece out',
   'ev.move': p => `${p.name} moved ${p.steps} square${s(p.steps)}`,
+  'ev.raid': p => `${p.name} broke into ${p.victimMe ? 'your' : `${p.victim}'s`} lane!`,
+  'ev.back': '{name} backed out one square',
+  'ev.backOut': '{name} got out of the lane',
   'ev.capture': p => (p.victimMe ? `${p.name} captured your piece!` : `${p.name} captured ${p.victim}'s piece!`),
   'ev.home': '{name} got a piece home',
   'ev.finished': '{name} got every piece home ({place})',
@@ -242,6 +253,7 @@ const en = {
       <li>Everyone has pieces in their corner. Roll a <b>6</b> to bring one out onto your start square.</li>
       <li>Move one piece by the number you roll. Pieces go clockwise all the way around, then up your colored lane to the middle (<b>home</b>). You need the exact number to get home.</li>
       <li>Land on an opponent's piece to <b>capture</b> it: it goes back to their corner. Start squares and ★ squares are <b>safe</b>.</li>
+      <li><b>Raid:</b> a piece in its colored lane isn't safe. Roll exactly onto it and you can catch it (or just move on). Your piece then stays in that lane and backs out one square on each <b>6</b> or <b>1</b>; the lane's owner can catch it there.</li>
       <li>Roll again after a <b>6</b>, a <b>capture</b> or getting a piece <b>home</b>. Three 6s in a row lose the turn.</li>
       <li>If only one move is possible it plays itself.</li>
     </ul>
@@ -349,12 +361,20 @@ const fr = {
   'explain.needSix': 'Tous tes pions sont au départ : il te faut un 6 pour en sortir un.',
   'explain.roll': 'Lance le dé, puis avance un de tes pions d\'autant de cases.',
   'explain.move': 'Touche un pion qui brille pour l\'avancer de {n} cases.',
+  'explain.raid': 'Un pion adverse dans son couloir est à ta portée : touche-le (lueur rouge) pour l\'attraper, ou touche un de tes pions pour l\'avancer de {n} cases.',
+  'explain.trapped': 'Ton pion est coincé dans un couloir adverse : il recule d\'une case à chaque 6 ou 1.',
   'explain.youAre': 'Tu es {color}, en bas à gauche. Tes pions tournent dans le sens des aiguilles d\'une montre jusqu\'au centre.',
   'explain.watching': 'Tu regardes une autre table.',
   'explain.waitTables': 'On attend que les autres tables finissent, puis tout le monde change d\'adversaires.',
   'explain.nextRound': 'Nouvelles tables dans un instant : tu affronteras d\'autres joueurs.',
 
   'side.standings': 'Classement',
+  'side.story': 'Derniers coups',
+  'autoplay.on': 'Joue pour moi',
+  'autoplay.off': 'Je reprends',
+  'autoplay.title': 'L’ordinateur joue à ta place jusqu’à ce que tu touches « Je reprends » ou que tu joues toi-même',
+  'status.autoplay': 'L’ordinateur joue à ta place',
+  'tag.autoplay': 'auto',
   'side.tables': 'Tables',
   'side.target': 'premier à {n}',
   'side.atTable': 'table {n}',
@@ -390,6 +410,9 @@ const fr = {
   'ev.roll': p => (p.me ? `Tu fais un ${p.value}` : `${p.name} fait un ${p.value}`),
   'ev.out': p => (p.me ? 'Tu sors un pion' : `${p.name} sort un pion`),
   'ev.move': p => `${p.me ? 'Tu avances' : `${p.name} avance`} de ${p.steps} case${s(p.steps)}`,
+  'ev.raid': p => `${p.me ? 'Tu entres' : `${p.name} entre`} dans le couloir ${p.victimMe ? 'de ton pion' : `de ${p.victim}`} !`,
+  'ev.back': p => (p.me ? 'Tu recules d\'une case' : `${p.name} recule d'une case`),
+  'ev.backOut': p => (p.me ? 'Tu sors du couloir' : `${p.name} sort du couloir`),
   'ev.capture': p => (p.victimMe ? `${p.name} capture un de tes pions !` : p.me ? `Tu captures un pion de ${p.victim} !` : `${p.name} capture un pion de ${p.victim} !`),
   'ev.home': p => (p.me ? 'Tu rentres un pion' : `${p.name} rentre un pion`),
   'ev.finished': p => (p.me ? `Tu as rentré tous tes pions (${p.place})` : `${p.name} a rentré tous ses pions (${p.place})`),
@@ -532,6 +555,7 @@ const fr = {
       <li>Chacun a ses pions dans son coin. Fais un <b>6</b> pour en sortir un sur ta case de départ.</li>
       <li>Avance un pion du nombre obtenu. Les pions font tout le tour dans le sens des aiguilles d'une montre, puis montent ton couloir de couleur jusqu'au centre (<b>l'arrivée</b>). Il faut le nombre exact pour arriver.</li>
       <li>Arrête-toi sur un pion adverse pour le <b>capturer</b> : il retourne dans son coin. Les cases de départ et les cases ★ sont <b>protégées</b>.</li>
+      <li><b>Raid :</b> un pion dans son couloir de couleur n'est pas à l'abri. Fais pile le nombre pour tomber dessus et tu peux l'attraper (ou simplement avancer). Ton pion reste alors dans ce couloir et recule d'une case à chaque <b>6</b> ou <b>1</b> ; le propriétaire du couloir peut l'y capturer.</li>
       <li>Rejoue après un <b>6</b>, une <b>capture</b> ou un pion <b>rentré</b>. Trois 6 d'affilée font perdre le tour.</li>
       <li>S'il n'y a qu'un seul coup possible, il se joue tout seul.</li>
     </ul>

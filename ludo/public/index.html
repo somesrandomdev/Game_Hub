@@ -107,19 +107,22 @@
       <div id="board-area" class="board-area">
         <div id="watch-bar" class="watch-bar hidden"></div>
         <div id="board" class="board"></div>
+        <!-- the die sits right under the board, where the thumb is -->
+        <div class="panel control" id="control">
+          <button id="die" class="die big-die" data-act="roll" disabled aria-label="Roll"></button>
+          <div class="roll-text">
+            <div id="turn-line" class="turn-line"></div>
+            <div id="status" class="status"></div>
+            <p id="explain" class="explain"></p>
+            <div id="timer" class="timer hidden"><i></i></div>
+          </div>
+          <button id="btn-autoplay" class="btn sm autoplay-btn" data-action="autoplay"></button>
+        </div>
       </div>
 
       <aside class="side">
-        <div class="panel control" id="control">
-          <div id="turn-line" class="turn-line"></div>
-          <div class="roll-row">
-            <button id="die" class="die big-die" data-act="roll" disabled aria-label="Roll"></button>
-            <div class="roll-text">
-              <div id="status" class="status"></div>
-              <p id="explain" class="explain"></p>
-            </div>
-          </div>
-          <div id="timer" class="timer hidden"><i></i></div>
+        <div class="panel">
+          <h3 class="side-h" data-i18n="side.story"></h3>
           <ol id="story" class="story" aria-live="polite"></ol>
         </div>
 

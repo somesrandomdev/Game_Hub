@@ -3,7 +3,7 @@
 // Bot / autopilot strategy: get pieces home, capture when possible, don't stop
 // right in front of an opponent, bring pieces out on a six.
 
-const { absOf, SAFE, HOME, LAST_TRACK, TRACK } = require('./game');
+const { absOf, isRaid, SAFE, HOME, LAST_TRACK, TRACK, RAID } = require('./game');
 
 // Could an opponent piece reach this shared square with one roll?
 function threatened(t, pid, abs) {
@@ -23,10 +23,13 @@ function threatened(t, pid, abs) {
 
 function scoreMove(t, pid, k, d) {
   const from = t.pieces[pid][k];
+  if (isRaid(from)) return 30; // backing out of someone's lane
   const to = from === -1 ? 0 : from + d;
   const seat = t.seat[pid];
   const abs = absOf(seat, to);
   let s = to / 10;
+  // a raider sitting in my home column
+  if (to > LAST_TRACK && to < HOME && t.players.some(q => q !== pid && t.pieces[q].includes(RAID + seat * 10 + to - LAST_TRACK))) s += 80;
   if (to === HOME) s += 100;
   if (from === -1) s += 45;
   if (from <= LAST_TRACK && to > LAST_TRACK && to < HOME) s += 25; // into the home column: safe
@@ -44,12 +47,15 @@ function scoreMove(t, pid, k, d) {
 function chooseMove(g, pid) {
   const t = g.tableOf(pid);
   if (!t || !t.rolled) return null;
-  let best = t.movable[0];
+  let best = null;
   let bestScore = -Infinity;
-  for (const k of t.movable) {
-    const s = scoreMove(t, pid, k, t.die) + Math.random() * 4;
-    if (s > bestScore) { bestScore = s; best = k; }
-  }
+  const consider = (choice, s) => {
+    s += Math.random() * 4;
+    if (s > bestScore) { bestScore = s; best = choice; }
+  };
+  for (const k of t.movable) consider({ piece: k, raid: false }, scoreMove(t, pid, k, t.die));
+  // catching a piece about to get home is worth getting stuck for a while
+  for (const r of t.raids) consider({ piece: r.piece, raid: true }, 60 + (t.pieces[r.victim][r.victimPiece] - LAST_TRACK) * 6);
   return best;
 }
 
@@ -58,7 +64,8 @@ function act(g, pid) {
   const t = g.tableOf(pid);
   if (!t || t.done || g.phase !== 'play' || g.current(t) !== pid) return null;
   if (!t.rolled) { g.roll(pid); return 'roll'; }
-  g.move(pid, chooseMove(g, pid));
+  const c = chooseMove(g, pid);
+  g.move(pid, c.piece, c.raid);
   return 'move';
 }
 
