@@ -658,11 +658,12 @@ test('a Flip card turns every card over and the dark side takes over', () => {
   assert.deepEqual([g.hands.a[0].color, g.hands.a[0].value], ['pink', '7']);
   assert.deepEqual(g.hands.a[0].back, { color: 'blue', value: '2' });
   assert.equal(g.current, 'b');
-  // opponents see the other side of your cards; you never see your own backs
+  // opponents see the other side of your cards; you can peek at your own in your hand only
   const v = g.view('b');
   assert.deepEqual(v.players.find(p => p.id === 'a').backs, [{ color: 'blue', value: '2' }]);
   assert.equal(v.players.find(p => p.id === 'b').backs, undefined);
-  assert.ok(v.hand.every(c => !('back' in c)));
+  assert.deepEqual(v.hand.map(c => c.back), [{ color: 'green', value: '3' }]);
+  assert.ok(g.view('a').hand.every(c => c.back));
   assert.ok(!('back' in v.top));
 });
 

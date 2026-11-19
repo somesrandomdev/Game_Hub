@@ -747,7 +747,8 @@ class UnoGame {
         // UNO Flip: the other side of everyone else's cards faces the table
         backs: this.settings.flip && id !== pid ? (this.hands[id] || []).map(c => c.back) : undefined,
       })),
-      hand: hand ? hand.map(face) : null,
+      // UNO Flip: you may peek at the other side of your own cards (nobody else sees it)
+      hand: hand ? hand.map(c => (this.settings.flip ? { ...face(c), back: { ...c.back } } : face(c))) : null,
       playable: hand ? hand.filter(c => this.canPlay(pid, c)).map(c => c.id) : [],
       safe: this.unoSafe.has(pid),
       canUno: Boolean(hand && hand.length && this.phase === 'play' && this.nearUno(hand)),

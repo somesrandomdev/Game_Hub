@@ -59,6 +59,8 @@ const app = {
   lastSeq: 0,
   gameId: null,
   sortMode: store.get('sort', 'color'),
+  peek: false,           // UNO Flip: showing the other side of my own cards
+  wasMyTurn: false,
   drawerOpen: false,
   drawerTab: 'chat',
   unread: 0,
@@ -941,30 +943,39 @@ function renderHand(g, myTurn) {
   const hand = $('#hand');
   const cards = g.hand ? sortHand(g.hand, app.sortMode) : [];
   const playable = new Set(g.playable);
-  hand.classList.toggle('my-turn', myTurn);
+  // UNO Flip: peek at the other side of your hand; it turns back when your turn comes
+  const canPeek = Boolean(cards[0]?.back);
+  if (myTurn && !app.wasMyTurn) app.peek = false;
+  app.wasMyTurn = myTurn;
+  const peek = app.peek = app.peek && canPeek;
+  $('#btn-peek').classList.toggle('hidden', !canPeek);
+  $('#btn-peek').classList.toggle('on', peek);
+  $('#hand-wrap').classList.toggle('peeking', peek);
+  hand.classList.toggle('my-turn', myTurn && !peek);
   const existing = new Map($$('.card', hand).map(el => [Number(el.dataset.id), el]));
   const ordered = [];
   const fresh = [];
   for (const c of cards) {
     let el = existing.get(c.id);
-    const faceKey = `${c.color}:${c.value}`;
+    const shown = peek ? { id: c.id, ...c.back } : c;
+    const faceKey = `${shown.color}:${shown.value}`;
     if (el) {
       existing.delete(c.id);
       if (el.dataset.face !== faceKey) {
-        // turned over by a Flip: same card, other face
-        const turned = createCard(c);
+        // turned over by a Flip (or a peek): same card, other face
+        const turned = cardFace(shown, peek, g.side);
         turned.tabIndex = 0;
         el.replaceWith(turned);
         el = turned;
       }
     } else {
-      el = createCard(c);
+      el = cardFace(shown, peek, g.side);
       el.tabIndex = 0;
       fresh.push(el);
     }
     el.dataset.face = faceKey;
-    el.classList.toggle('playable', myTurn && playable.has(c.id));
-    el.classList.toggle('jump', !myTurn && playable.has(c.id));
+    el.classList.toggle('playable', !peek && myTurn && playable.has(c.id));
+    el.classList.toggle('jump', !peek && !myTurn && playable.has(c.id));
     el.classList.toggle('drawn', g.drawn === c.id);
     el.classList.remove('hide-for-fly');
     if (!app.drop && !drag.active) el.classList.remove('drag-src');
@@ -977,6 +988,24 @@ function renderHand(g, myTurn) {
   renderSel();
   layoutHand();
   return fresh;
+}
+
+// A wild's face doesn't say its side: when peeking, the other side is the one not in play.
+function cardFace(card, peek, side) {
+  return peek && card.value === 'wild' ? createCard(card, side !== 'dark') : createCard(card);
+}
+
+function togglePeek() {
+  const g = app.state?.game;
+  if (!g?.hand?.[0]?.back) return;
+  app.peek = !app.peek;
+  if (app.peek) clearSel();
+  renderHand(g, g.current === me() && g.phase === 'play');
+  for (const el of $$('#hand .card')) {
+    el.classList.remove('turning');
+    void el.offsetWidth; // restart the animation
+    el.classList.add('turning');
+  }
 }
 
 // Cards shrink a little when the hand gets big, overlap to fit, and sit on a gentle arc.
@@ -1570,7 +1599,7 @@ function wireDrag() {
   const hand = $('#hand');
   hand.addEventListener('pointerdown', e => {
     const card = e.target.closest('.card');
-    if (!card || e.button !== 0 || drag.active || app.drop) return;
+    if (!card || e.button !== 0 || drag.active || app.drop || app.peek) return;
     drag.el = card;
     drag.x0 = e.clientX;
     drag.y0 = e.clientY;
@@ -2124,12 +2153,14 @@ function wire() {
   $('#hand').addEventListener('click', e => {
     if (app.justDragged) return;
     const card = e.target.closest('.card');
-    if (card) onCardClick(card);
+    if (card && app.peek) togglePeek(); // tap a card to turn the hand back
+    else if (card) onCardClick(card);
   });
   $('#hand').addEventListener('keydown', e => {
     if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('card')) {
       e.preventDefault();
-      onCardClick(e.target);
+      if (app.peek) togglePeek();
+      else onCardClick(e.target);
     }
   });
   $('#draw-pile').addEventListener('click', () => { if (app.state?.game?.canDraw) act('draw'); });
@@ -2143,6 +2174,7 @@ function wire() {
   $('#btn-uno').addEventListener('click', pressUno);
   $('#btn-multi').addEventListener('click', () => { if (app.sel) playCards(app.sel.ids.slice()); });
   $('#btn-multi-cancel').addEventListener('click', clearSel);
+  $('#btn-peek').addEventListener('click', togglePeek);
   $('#btn-sort').addEventListener('click', () => {
     app.sortMode = SORT_MODES[(SORT_MODES.indexOf(app.sortMode) + 1) % SORT_MODES.length];
     store.set('sort', app.sortMode);

@@ -344,6 +344,8 @@ const en = {
   'side.dark': '🌑 Dark side',
   'flip.backsTitle': 'The other side of their cards',
   'flip.backsOf': "{name}'s cards, seen from your side",
+  'flip.peekTitle': 'See the other side of your cards (only you can see it)',
+  'flip.peeking': 'Other side · tap a card to go back',
   'modal.pickColorFlip': 'A wild turned up: pick its color',
 
   // ---------- voice chat ----------
@@ -765,6 +767,8 @@ const fr = {
   'side.dark': '🌑 Côté obscur',
   'flip.backsTitle': 'L\'autre face de ses cartes',
   'flip.backsOf': 'Les cartes de {name}, vues de ton côté',
+  'flip.peekTitle': 'Voir l\'autre face de tes cartes (toi seul la vois)',
+  'flip.peeking': 'Autre face · touche une carte pour revenir',
   'modal.pickColorFlip': 'Un joker est apparu : choisis sa couleur',
 
   // ---------- chat vocal ----------
